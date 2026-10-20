@@ -104,6 +104,7 @@ abstract contract StrategyHubState is VaultState {
     function _usdc() internal view override returns (address usdc) {
         uint256 id = block.chainid;
         if (id == 1) usdc = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+        else if (id == 43114) usdc = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
         else if (id == 10) usdc = 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85;
         else if (id == 42161) usdc = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
         else if (id == 8453) usdc = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;

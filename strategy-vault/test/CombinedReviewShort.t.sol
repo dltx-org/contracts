@@ -93,9 +93,10 @@ contract CombinedReviewShortTest is ShortVaultTest {
         }
     }
 
-    /// CR-D5: a watched DEX that becomes unreadable adds no reserve, and once it drops out of the gate the
-    /// budget is fixed for good: later arrivals on spot never leave.
-    function test_CR_D5_unreadableDex_noReserve_budgetForever() public {
+    /// CR-D5: a watched DEX that becomes unreadable adds no reserve (stated as a residual, decision 7);
+    /// its other half is fixed by the floor of the partner's audit M4: once the first send is seen on
+    /// HyperEVM, a later arrival on spot leaves.
+    function test_CR_D5_unreadableDex_noReserve_laterArrivalsLeave() public {
         address v = address(vault);
         core.setMargin(1, v, 60_000_000, 20_000_000, 550_000_000);
         core.setSpot(v, 0, 20_000_000_000);
@@ -106,13 +107,12 @@ contract CombinedReviewShortTest is ShortVaultTest {
         vm.warp(vm.getBlockTimestamp() + 7 days);
         _pace();
         _step();
-        assertEq(vault.budget(), 20_000_000_000 - 105_000_000, "R = 0 for the unreadable DEX");
-        core.setSpot(v, 0, 105_000_000 + 1_000_000_000); // a later arrival
-        for (uint256 i; i < 5; ++i) {
-            _pace();
-            bytes[] memory r = _step();
-            assertEq(_countId(r, 13), 0);
-        }
+        assertEq(vault.floor(), 105_000_000, "R = 0 for the unreadable DEX");
+        core.setSpot(v, 0, 105_000_000 + 1_000_000_000); // the send executed, and a later arrival
+        usdc.mint(v, 198_950_000); // the send's USDC on HyperEVM
+        _pace();
+        bytes[] memory r = _step();
+        assertTrue(_has(r, _sendAsset(USDC_SYSTEM, SPOT, SPOT, 0, 1_000_000_000)), "the later arrival leaves");
         (uint8 s,, uint256 flags) = _state();
         assertEq(s, CLOSING);
         assertEq(flags & F_BUDGET, F_BUDGET);
@@ -138,7 +138,7 @@ contract CombinedReviewShortTest is ShortVaultTest {
         assertGt(_countId(_since(from), 13), 0, "the spot USDC leaves");
     }
 
-    /// CR-X2 (Codex), fixed: in unified mode the budget is fixed two pacing windows after the first
+    /// CR-X2 (Codex), fixed: in unified mode the floor is fixed two pacing windows after the first
     /// margin try, and the unrelated money leaves.
     function test_CR_X2_unifiedMarginHeld_budgetFixedAfterTwoWindows() public {
         address v = address(vault);
@@ -155,7 +155,7 @@ contract CombinedReviewShortTest is ShortVaultTest {
             vm.roll(vm.getBlockNumber() + 20);
             sends += _countId(_step(), 13);
         }
-        assertTrue(vault.budgetSet(), "the budget is fixed");
+        assertTrue(vault.floorSet(), "the floor is fixed");
         assertGt(sends, 0, "the unrelated money leaves");
     }
 

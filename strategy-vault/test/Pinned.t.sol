@@ -52,11 +52,16 @@ contract PinnedTest is Test {
     bytes32 constant REGISTRY_CODE = 0xd9d8d635144040392821ad5807a45484403fe7fa12a70bb9556e9c6aecc0a200;
     bytes32 constant LONG_EXIT_CODE = 0xa5554ffbcbfe26275afa41f148189ca2a347cccb48c9b50bacdd1d08aea5f688;
     bytes32 constant LONG_LEG_CODE = 0xf9c31cb3659be0714a61bd486c86e39978f0c22824620fb3973e821cd4eaba6a;
-    bytes32 constant SHORT_EXIT_CODE = 0x96546cbafe94aff55bbbe39837d25e7b0fafe63a0a96fe7bd3541a05002dc91c;
-    bytes32 constant SHORT_LEG_CODE = 0xc5daf55cc017f960321ad9450e73c9474cb69aee6857ee6ef0e1fb6bb4cae46b;
-    bytes32 constant COMBINATION_CODE = 0x24a4f84b2ca4cdcd0d6a4194c71b454ef9ebca6d621bc792045eda551307b184;
-    bytes32 constant HUB_FEE_CODE = 0x8046886f60273b10ef6973bca5dd4b671ce86112f512c92acd0daab0057eb60c;
-    bytes32 constant HUB_CODE = 0x0f0b5ec17b617a5dd0e75cc45ebecf401241bc4ea9b02088e5a9e831786a4f7a;
+    bytes32 constant SHORT_EXIT_CODE = 0xb963a515c9467004bd9f58a163e8236a090dd6e5e477758f4d8a1c14892e68f5;
+    bytes32 constant SHORT_LEG_CODE = 0xed2cbb37949a5c1c2aa393247d96ae8722c90d3ba1ce5e61f86a7baae1a3c68d;
+    bytes32 constant COMBINATION_CODE = 0xb321a35ade28a925ea2a7167415260edb76aef1e4a0457a700ccdfb580ed692d;
+    bytes32 constant HUB_FEE_CODE = 0xead386251b7465f201678da4f35c44f0fef48c29950b5ec3d01a495d1b8e9fa0;
+    // the modules' runtime code hashes, which the leg codes and the hub code pin (script/Deploy.s.sol uses
+    // these, never `type(...).runtimeCode`: the partner's audit L1)
+    bytes32 constant LONG_EXIT_RUNTIME_HASH = 0x8becfdd9c8ca1285013e279985e557e88e7ff9fe58fe50ace32d24332675fe70;
+    bytes32 constant SHORT_EXIT_RUNTIME_HASH = 0x2eb092b6c751c42fd55a1f6cb48b4c27f6c83448e57ea7cfd3ded58d7cdf67ca;
+    bytes32 constant HUB_FEE_RUNTIME_HASH = 0xe8aea602bd0c995180388a99447b0f2f39ae93fb9b36c4567861cb793c82c54a;
+    bytes32 constant HUB_CODE = 0xa994298b09c27e43fe2bc8043aed521d933d851dfa4923047b4af574aafa260c;
 
     function _predict(bytes32 salt, bytes memory init) internal pure returns (address) {
         return address(
@@ -142,24 +147,24 @@ contract PinnedTest is Test {
         emit log_named_address("short leg code", shortLeg);
         emit log_named_bytes32("short leg code hash", shortLeg.codehash);
         emit log_named_address("combination AAVE Arbitrum x Hyperliquid", combination);
-        // the modules carry no immutable: their code hash is their runtime code's, known before deployment
-        assertEq(longExit.codehash, keccak256(type(LongVaultExit).runtimeCode));
-        // solc 0.8.37 (via-IR) emits `type(ShortVaultExit).runtimeCode` differently in this compile unit
-        // than the runtime its creation code deploys (the combined review's re-pin, 2026-10-18; 0.8.28 had
-        // them equal): the deployed module, what the leg pins, is the vector below
-        assertEq(shortExit.codehash, 0x6a7bebb78fd843969f0fcc1ba552011b16a07a2128f045e9e7f6af549d0d6472, "short exit module code hash");
-        assertEq(hubFee.codehash, keccak256(type(StrategyHubFee).runtimeCode));
+        // the modules carry no immutable: their code hash is fixed by their creation code, known before
+        // deployment. solc 0.8.37 (via-IR) may emit `type(...).runtimeCode` differently in another compile
+        // unit than the runtime the creation code deploys (it did for ShortVaultExit in this one, 2026-10-18),
+        // so the deployed modules' hashes are pinned and the deploy script names them
+        assertEq(longExit.codehash, LONG_EXIT_RUNTIME_HASH, "long exit module code hash");
+        assertEq(shortExit.codehash, SHORT_EXIT_RUNTIME_HASH, "short exit module code hash");
+        assertEq(hubFee.codehash, HUB_FEE_RUNTIME_HASH, "hub fee module code hash");
         assertEq(registry, 0x057a270B71e1189BF8e877FD9CFA6f399b8608CD, "registry vector");
-        assertEq(hub, 0xbb416DF2FA250301B2c1F92e2CD9B8723a0a98f8, "hub code vector");
-        assertEq(hub.codehash, 0x539cd67f0106ff95734af31c613f60604ff953715f6de219c89fe5fae77dbd17, "hub code hash");
+        assertEq(hub, 0x572A510cd396aE6D345b5085c1dfB5B4450071da, "hub code vector");
+        assertEq(hub.codehash, 0x0fe042f15c5aab1017f89961fd9fa2e73d9da491be9e06d650c6d9eb4ce6da6a, "hub code hash");
         assertEq(longExit, 0x8503d38Dc689fDacF732B9127EfF30E18101f9d0, "long exit module vector");
         assertEq(longLeg, 0x576848daE996EA4fFFce9462F028aAab27C08C3D, "long leg code vector");
         assertEq(longLeg.codehash, 0x1bc4ae3696e6e8db5c393acb4cb6219f07b4cde3cf90cc1cc95c524a8912cdda, "long leg code hash");
-        assertEq(shortExit, 0x28BA9223B86471Ee3D10b396bB817d37D2BfA0f9, "short exit module vector");
-        assertEq(shortLeg, 0x1F58E440292434CCBA90869502033e6b5730d072, "short leg code vector");
-        assertEq(shortLeg.codehash, 0x1a3ec84f1960379ea063c0217e8216e60bcecbd16157a0ac8516ea680b9a7385, "short leg code hash");
-        assertEq(hubFee, 0xce38790486045B2E44D21D99E225b8cD08491e48, "hub fee module vector");
-        assertEq(combination, 0xf8410023BD0729A9B28CF5e7c2Fe60Ffc7A180B0, "combination vector");
+        assertEq(shortExit, 0x0dEc9984Bb411Cd15Df2FA3F4B220c6E30FEBac9, "short exit module vector");
+        assertEq(shortLeg, 0x563B6bE2D1b33Df538985e7bE04b6e78C7982eDa, "short leg code vector");
+        assertEq(shortLeg.codehash, 0xc829862ecbeb1c7f55efe3b49ebedf0d062009bf430c250c0fc2f806122ddcee, "short leg code hash");
+        assertEq(hubFee, 0x0d67a2Ce96b444f8cdf871ec07A0bacd9aE39DcA, "hub fee module vector");
+        assertEq(combination, 0x424aE02E590Cc4CE4CbC47f623E81C1a92Ee2bb8, "combination vector");
     }
 
     /// For the TypeScript encoders: a fixed configuration (no deployment in it), its hash, its pair id and

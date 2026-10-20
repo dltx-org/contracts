@@ -18,6 +18,7 @@ contract FundingTest is Helpers {
     address constant ARB_USDC = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
     address constant ETH_USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant HYPE_USDC = 0xb88339CB7199b77E23DB6E890353E22632Ba630f;
+    address constant AVAX_USDC = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
     address constant MT = 0x81D40F21F12A8F0E3252Bccb954D722d4c464B64;
     address constant TM = 0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d;
     bytes32 constant STRATEGY = keccak256("strategy A");
@@ -38,6 +39,7 @@ contract FundingTest is Helpers {
         vm.etch(ARB_USDC, address(new MockToken()).code);
         vm.etch(ETH_USDC, address(new MockToken()).code);
         vm.etch(HYPE_USDC, address(new MockToken()).code);
+        vm.etch(AVAX_USDC, address(new MockToken()).code);
         vm.etch(MT, address(new MockTransmitter()).code);
         vm.etch(TM, address(new MockTokenMessenger()).code);
         mt = MockTransmitter(MT);
@@ -453,6 +455,49 @@ contract FundingTest is Helpers {
         vm.prank(TRANSFER);
         a.fund(address(vf), vault, 250e6);
         assertEq(usdc(HYPE_USDC, vault), 250e6);
+        assertEq(a.allowanceOf(address(vf), STRATEGY, CONFIG), 0);
+    }
+
+    /// Avalanche (domain 1) is a deposit chain (the operator's decision, 2026-10-20): the home accepts
+    /// an authorisation for it, only records it, and dispatches it once the factory's trust for
+    /// domain 1 is in effect.
+    function test_anAuthorisationForAvalancheIsAccepted() public {
+        uint256 id = authorise(a, PASSKEY_A, address(vf), 1, STRATEGY, CONFIG, 250e6);
+        assertEq(a.grant(id).domain, 1);
+        assertEq(a.allowanceOf(address(vf), STRATEGY, CONFIG), 0, "never added at the home");
+        assertFalse(a.isTrusted(address(vf), 1));
+        vm.warp(dueOf(a, address(vf), 1));
+        assertTrue(a.isTrusted(address(vf), 1));
+        assertFalse(a.isTrusted(address(vf), 3), "a trust for Avalanche gives the home nothing");
+        a.dispatchAuthorisation(id);
+        assertEq(mt.lastDomain(), 1);
+        assertEq(mt.lastRecipient(), bytes32(uint256(uint160(address(a)))));
+    }
+
+    /// Amendment 1 §5's copy flow on Avalanche: the home's dispatched authorisation, then the copy's
+    /// record and that authorisation, then the money burned there, then `fund` (the FIXTURE factory).
+    function test_anAvalancheCopyTakesAnAuthorisationAndFundsItsVault() public {
+        uint256 id = authorise(a, PASSKEY_A, address(vf), 1, STRATEGY, CONFIG, 250e6);
+        vm.warp(dueOf(a, address(vf), 1));
+        bytes memory body = dispatched(id);
+        uint256 t = vm.getBlockTimestamp();
+
+        vm.revertToState(ready);
+        vm.chainId(43114);
+        vm.warp(t);
+        deliverRecord(a, 1, DEST, two(wallet(WALLET_A), passkey(PASSKEY_A)));
+        assertFalse(a.isTrusted(address(vf), 1));
+        deliverAuth(body);
+        assertTrue(a.authorisationApplied(id));
+        assertTrue(a.isTrusted(address(vf), 1), "trusted on this chain at once");
+        assertFalse(a.isTrusted(address(vf), 3), "for Avalanche's own domain only");
+        assertEq(a.allowanceOf(address(vf), STRATEGY, CONFIG), 250e6);
+
+        MockToken(AVAX_USDC).mint(address(a), 250e6); // the home's burn lands
+        address vault = vf.create(STRATEGY, address(a), CONFIG);
+        vm.prank(TRANSFER);
+        a.fund(address(vf), vault, 250e6);
+        assertEq(usdc(AVAX_USDC, vault), 250e6);
         assertEq(a.allowanceOf(address(vf), STRATEGY, CONFIG), 0);
     }
 

@@ -93,18 +93,19 @@
       },
       "ownerAction": {
         "caller": "owner",
-        "does": "Carries out one action the owner signed for this contract. Action 1 revokes the execution key here; action 2 allows it again. On the short contract only, action 3 replaces the Hyperliquid agent and action 4 cancels any pending agent. Revoking on the short contract also drops DLTX's pending agent proposal.",
+        "does": "Carries out one action the owner signed for this contract. Action 1 revokes the execution key here; action 2 allows it again. On the short contract only, action 3 replaces the Hyperliquid agent, action 4 cancels any pending agent and action 5 releases the exit's reservation of USDC sent from spot (budget mode). Revoking on the short contract also drops DLTX's pending agent proposal.",
         "who": "The owner: a local action signed by one credential in effect in the deposit contract on this chain. Anyone may submit it.",
         "when": "In any state, before the signature's deadline. Each contract is revoked and allowed on its own: revoking one does not revoke the others.",
         "checks": [
           "The deadline has not passed.",
           "The signature is the owner's `VaultAction(address vault, uint256 chainId, uint8 action, address agent, uint256 nonce, uint256 deadline)`, naming this contract, this chain and the signing credential's current nonce (`ownerNonceOf(credential)`). Each credential has its own nonce: its signatures are accepted once, in order (an older \"allow\" cannot be replayed after the same credential's \"revoke\"), and no other credential can spend it, so none can block another's action by acting first.",
           "The credential named is the one that made the signature: a wallet's recovered address, a passkey's key, as the deposit contract reads them; anything else reverts (`BadSignature`).",
-          "On the hub and the long contract, actions 3 and 4 revert (`Unsupported`), and the nonce is not used up.",
-          "On the short contract, action 3 with the burner (`burner()`) takes effect at once. Any other agent waits 24 hours (`applyOwnerAgent`), and a zero agent reverts."
+          "On the hub and the long contract, actions 3, 4 and 5 revert (`Unsupported`), and the nonce is not used up.",
+          "On the short contract, action 3 with the burner (`burner()`) takes effect at once. Any other agent waits 24 hours (`applyOwnerAgent`), and a zero agent reverts.",
+          "On the short contract, action 5 sets the reservation (`reserved`) to zero: the owner's word that the USDC sends from spot to HyperEVM it counts will not execute. What was reserved may then leave spot again."
         ],
         "params": {
-          "action": "1 revoke the execution key, 2 allow it again, 3 replace the agent (the short contract only), 4 cancel the pending agents (the short contract only).",
+          "action": "1 revoke the execution key, 2 allow it again, 3 replace the agent (the short contract only), 4 cancel the pending agents (the short contract only), 5 release the exit's reservation (the short contract only).",
           "agent": "For action 3, the new agent. The other actions ignore it, but it is signed all the same.",
           "credential": "The signing credential's id in the deposit contract (`credentialId`: keccak of its kind, x and y), whose nonce the signature carries.",
           "deadline": "When the signature expires, as a Unix time in seconds: the call reverts after it.",
@@ -387,7 +388,7 @@
       "AlreadyInitialized": "`initialize` was called on a contract already initialised, or on the member code itself.",
       "BadLinks": "`initialize` was given no link, more than four, a domain count that differs from the link count, or a link at the zero address.",
       "NotExecution": "The caller is not the group's current execution key in this chain's registry.",
-      "NotAllowed": "The call is not allowed now. Examples: the owner revoked the execution key here; `announceReady` for a link on this chain; `notifyLink` outside the exit or for a member already told; a module function called on the module itself rather than through a member. Each contract adds its own cases, such as the long contract's swap callback outside its own swap, the short contract refusing HYPE except from HyperCore, or the hub's `setFeeRate` from anyone but recovery.",
+      "NotAllowed": "The call is not allowed now. Examples: the owner revoked the execution key here; `announceReady` for a link on this chain; `notifyLink` outside the exit or for a member already told; a module function called on the module itself rather than through a member. Each contract adds its own cases, such as the long contract's swap callback outside its own swap, the short contract refusing HYPE except from HyperCore, the short contract's `applyOwnerAgent` once the credential that chose the agent is no longer one in this chain's owner record, or the hub's `setFeeRate` from anyone but recovery.",
       "NotReady": "Money was sent to a member that has not announced itself yet, or a member on this chain to be told of the exit has no code yet.",
       "Exiting": "The execution key called this contract while it is in its exit.",
       "NotExiting": "A call that runs only in the exit was made before the contract entered it.",
@@ -399,7 +400,7 @@
       "FeeAboveCap": "A transfer to another chain was refused: Circle's minimum fee is above 10 bp of the amount, or a fast transfer's maximum fee is above the contract's fast-transfer cap.",
       "OverFeeBudget": "On the hub or the short contract, Circle's fees charged in today's and yesterday's buckets would exceed the contract's daily fee budget.",
       "Reentrancy": "A protected function was entered again before the first call returned.",
-      "Unsupported": "The call names no function of this contract or its module, or an owner action this contract does not take (agent actions on the hub and the long contract).",
+      "Unsupported": "The call names no function of this contract or its module, or an owner action this contract does not take (actions 3, 4 and 5 on the hub and the long contract).",
       "ZeroAmount": "A transfer of zero was asked; on the long contract, also a repayment, a swap or a repayment with collateral of nothing.",
       "GasTooLow": "Less gas was left than a Circle message's fixed try needs, during creation or entering the exit: the call reverts rather than skip the message.",
       "BadModule": "At deployment of a member code, the module's code hash was missing, empty, or did not match the code at the module's address."
@@ -791,7 +792,7 @@
       },
       "errors": {
         "BadParams": "The hub's parameters are out of bounds (`validateParams`), or at creation the factory's leg value kinds do not match the hub's links.",
-        "NoUsdc": "The hub is on a chain outside its USDC table (Ethereum, OP Mainnet, Arbitrum, Base, Polygon, HyperEVM).",
+        "NoUsdc": "The hub is on a chain outside its USDC table (Ethereum, Avalanche, OP Mainnet, Arbitrum, Base, Polygon, HyperEVM).",
         "NoSnapshot": "There is no snapshot, or the latest is more than 10 minutes old.",
         "SnapshotIncomplete": "The remote leg's report was not observed 1 to 3 minutes after the snapshot.",
         "StaleReport": "The remote leg has no report, or its latest is more than 10 minutes old.",
@@ -830,7 +831,7 @@
         "validateParams": {
           "does": "Checks a configuration's parameters for this leg and reverts unless they are acceptable. The combination factory calls it before creating the strategy's contracts on this chain, so a strategy the owner signed with other protocols or numbers outside these bounds is never created.",
           "checks": [
-            "The six addresses are exactly the ones this code is pinned to on Arbitrum: Aave V3's pool `0x794a61358D6845594F94dc1DB02A252b5b4814aD`, Aave's price oracle `0xb56c2F0B653B2e0b10C9b928C8580Ac5Df02C7C7`, WETH `0x82aF49447D8a07e3bd95BD0d56f35241523fBab1`, USDC `0xaf88d065e77c8cC2239327C5EDb3A432268e5831`, the Uniswap V3 WETH/USDC pool at the 0.05% fee `0xC6962004f452bE9203591991D15f6b388e09E8D0`, and DLTX's repay-with-collateral contract (its address is listed on Contract addresses once the strategy contracts are deployed).",
+            "The six addresses are exactly the ones this code is pinned to on Arbitrum: Aave V3's pool `0x794a61358D6845594F94dc1DB02A252b5b4814aD`, Aave's price oracle `0xb56c2F0B653B2e0b10C9b928C8580Ac5Df02C7C7`, WETH `0x82aF49447D8a07e3bd95BD0d56f35241523fBab1`, USDC `0xaf88d065e77c8cC2239327C5EDb3A432268e5831`, the Uniswap V3 WETH/USDC pool at the 0.05% fee `0xC6962004f452bE9203591991D15f6b388e09E8D0`, and DLTX's repay-with-collateral contract, already deployed on Arbitrum and used by DLTX's current product (Contract addresses lists it once the strategy contracts are deployed, whose verified code names it).",
             "The health floor is between 1.05 and 3.0 (Aave's scale, 18 decimals).",
             "The oracle bound is between 30 and 500 bp.",
             "The daily loss budget is at most 500 bp.",
@@ -1226,7 +1227,7 @@
       "module": "ShortVaultExit",
       "title": "The short contract",
       "brief": "A strategy's Hyperliquid account, on HyperEVM: the short is held in the contract's own name.",
-      "summary": "The leg that holds a strategy's short, on HyperEVM: the contract is the Hyperliquid account itself. A trading agent trades it (Hyperliquid lets an agent trade, never withdraw); DLTX's execution key moves its margin, reduces or closes the position with reduce-only orders within the order bound, and sends money only to the strategy's other contracts. You can replace the agent with an inert one at once. In an exit it closes everything at oracle prices and burns its USDC to its hub over Circle's bridge. Its exit runs in a fixed module, `ShortVaultExit`.",
+      "summary": "The leg that holds a strategy's short, on HyperEVM: the contract is the Hyperliquid account itself. A trading agent trades it: Hyperliquid lets an agent trade and change some account settings, never withdraw to an outside address, so it can still lose the account's money by trading; DLTX's execution key moves its margin, reduces or closes the position with reduce-only orders within the order bound, and sends money only to the strategy's other contracts. You can replace the agent with an inert one at once. In an exit it closes everything at oracle prices and burns its USDC to its hub over Circle's bridge. Its exit runs in a fixed module, `ShortVaultExit`.",
       "functions": {
         "legInfo": {
           "does": "Describes this leg code to the combination factory, which checks its pins against it.",
@@ -1353,7 +1354,7 @@
         },
         "proposeAgent": {
           "caller": "execution-key",
-          "does": "Proposes DLTX's agent for this account: the key that trades it on Hyperliquid and cannot move its money. It replaces any earlier proposal. The account's first agent may be applied at once; any later one after 24 hours, unless the owner cancels it.",
+          "does": "Proposes DLTX's agent for this account: the key that trades it on Hyperliquid: it cannot withdraw to an outside address, but it can trade at a loss. It replaces any earlier proposal. The account's first agent may be applied at once; any later one after 24 hours, unless the owner cancels it.",
           "who": "The execution key, while not revoked.",
           "when": "Outside the exit.",
           "checks": [
@@ -1380,10 +1381,11 @@
           "caller": "anyone",
           "does": "Makes the agent the owner chose (other than the burner) the account's agent on HyperCore, once the choice has stood 24 hours. In exit, it also becomes the agent the exit keeps re-approving.",
           "who": "Anyone.",
-          "when": "In any state, 24 hours after the owner's choice, unless an owner credential cancelled it.",
+          "when": "In any state, 24 hours after the owner's choice, unless an owner credential cancelled it, and only while the credential that chose it is still one in this chain's owner record: removing a stolen credential voids its pending choice.",
           "checks": [
             "The owner has an agent pending.",
-            "24 hours have passed since the owner chose it."
+            "24 hours have passed since the owner chose it.",
+            "The credential that signed the choice is still a credential in effect in the deposit contract's record on this chain (`isCredentialId`); otherwise it reverts (`NotAllowed`). An unsynced copy has no credential, so it reverts there too until the record arrives again."
           ]
         },
         "burner": {
@@ -1456,16 +1458,16 @@
           "does": "How many times the exit has bought HYPE for transfer fees: at most three."
         },
         "marginTriedAt": {
-          "does": "The block of the exit's first try to move DEX 0's margin to spot; zero before. In budget mode, two pacing windows after it the budget is fixed even if the margin never moved (unified mode)."
+          "does": "The block of the exit's first try to move DEX 0's margin to spot; zero before. In budget mode, two pacing windows after it the floor is fixed even if the margin never moved (unified mode)."
         },
-        "budgetSet": {
-          "does": "Whether the exit has fixed its budget `budget`."
+        "floorSet": {
+          "does": "Whether the exit has fixed its spot floor `floor` (budget mode)."
         },
-        "budget": {
-          "does": "The exit's budget while a watched DEX keeps a position past its 7 days: the spot USDC that may still leave or be spent, fixed once, never refilled. In HyperCore's USDC units (8 decimals)."
+        "floor": {
+          "does": "Budget mode: the spot USDC the exit keeps, `R` (1.1 times the larger of the dropped-out position's margin and 10% of its notional) plus 1.05 USDC for the first-transfer fee, fixed once. What is above it and the reservation may leave spot, later arrivals included. In HyperCore's USDC units (8 decimals)."
         },
-        "spent": {
-          "does": "What has left spot or been spent from it since the budget was fixed, in HyperCore's USDC units (8 decimals)."
+        "reserved": {
+          "does": "Budget mode: USDC sent from spot to HyperEVM and not yet seen arriving there, in HyperCore's USDC units (8 decimals). It is released only once as much USDC from outside the strategy (Circle's mints from members set aside) has arrived on HyperEVM since the first of these sends, never by time alone; or by the owner's signed action 5 (`ownerAction`), when a send will not execute."
         },
         "dexSince": {
           "does": "When a HIP-3 DEX joined the exit's watched list, as a Unix time in seconds; zero if it is not watched."
@@ -1487,7 +1489,7 @@
             "It closes each open position on DEX 0, the strategy's perp and every perp named: reduce-only, immediate-or-cancel, its whole size, at the oracle price moved by the order bound. A named perp index of 10,000 or more reverts.",
             "Nothing leaves spot in a call that has a DEX 0 position open, nor while DEX 0 or a watched DEX in its first 7 days shows a position (or, for a watched DEX, cannot be read).",
             "Otherwise it moves DEX 0's withdrawable margin and each flat watched DEX's balance to spot, buys HYPE for fees if spot HYPE is under 0.0002 (the fewest 0.01 steps worth Hyperliquid's 10 USDC order minimum, at most three times), sends spot USDC to HyperEVM once HYPE is there (the balance read; when the read has not fallen since the last such send, which may have been dropped for want of the account's first-transfer fee of about 1 USDC, the balance less 1.05 USDC, so the fee fits), and sells HYPE above 0.0002 and the pinned stablecoins (USDE, USDT0, USDH at 1 USD less the bound) when a sale is worth at least 10 USDC.",
-            "A watched DEX still showing a position after 7 days stops holding the rest back: from then only a budget may leave spot or be spent, fixed once DEX 0's margin is on spot: the spot USDC less 1.1 times the larger of that position's margin and 10% of its notional, and less 1.05 USDC for the first-transfer fee. The stablecoins are not sold meanwhile.",
+            "A watched DEX still showing a position after 7 days stops holding the rest back (budget mode): from then spot keeps a floor, fixed once DEX 0's margin is on spot: 1.1 times the larger of that position's margin and 10% of its notional, plus 1.05 USDC for the first-transfer fee. What is above the floor and the reservation may leave or be spent, later arrivals on spot included. Each send to HyperEVM is reserved until as much USDC from outside the strategy has arrived there, so a send HyperCore drops is never counted as gone; a send that will never execute stays reserved until the owner's signed action 5. The stablecoins are not sold meanwhile.",
             "Last, the USDC held on HyperEVM goes to the hub: a transfer on the same chain, else a Circle burn at standard finality whose mint only the hub can complete, at Circle's minimum fee; skipped, never a revert, if that fee is above 10 bp or Circle refuses."
           ],
           "params": {
@@ -1557,7 +1559,7 @@
             "state": "0 not in exit, 1 closing, 2 recovered, 3 recovered with residue.",
             "dexes": "The watched HIP-3 DEXes (DEX 0 is always watched).",
             "residue": "What is left of each pinned token, in order HYPE, USDE, USDT0, USDH, in the token's HyperCore units (8 decimals): HYPE above the 0.0002 kept for fees, each listed when worth at least 0.01 USD.",
-            "flags": "Bits: 1 a member not yet told of the exit (`notifyLink`); 2 needs HYPE for fees (spot USDC under 11, or three purchases spent: `topUpHype`); 4 budget mode (a watched DEX kept a position past 7 days); 8 waiting for the owner (a watched DEX shows a position or cannot be read); 16 margin held while flat (perhaps an unnamed resting order); 32 the owner record's copy on this chain not yet synced, so no owner signature can be checked here."
+            "flags": "Bits: 1 a member not yet told of the exit (`notifyLink`); 2 needs HYPE for fees (spot USDC under 11, or three purchases spent: `topUpHype`); 4 budget mode (a watched DEX kept a position past 7 days: spot keeps `floor`, and sends not yet seen arriving stay `reserved`); 8 waiting for the owner (a watched DEX shows a position or cannot be read); 16 margin held while flat (perhaps an unnamed resting order); 32 the owner record's copy on this chain not yet synced, so no owner signature can be checked here."
           }
         },
         "receiveMint": {
@@ -1724,7 +1726,7 @@
           }
         },
         "hubDomains": {
-          "does": "The chains a hub of this factory may live on, by Circle's CCTP domain number (Ethereum 0, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19). Each is a chain where the deposit contract lives."
+          "does": "The chains a hub of this factory may live on, by Circle's CCTP domain number (Ethereum 0, Avalanche 1, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19). Each is a chain where the deposit contract lives."
         },
         "hubSetup": {
           "does": "What a hub created on this chain reads from the factory while it is initialised: this chain's pinned price sources, its sequencer uptime feed, and how each leg's value is known, in leg order. The hub reads it only then.",

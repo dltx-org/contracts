@@ -21,6 +21,10 @@ interface IMinFeeMessenger {
     function depositForBurn(uint256, uint32, bytes32, address, bytes32, uint256, uint32) external;
 }
 
+interface IMessageTransmitter {
+    function localDomain() external view returns (uint32);
+}
+
 interface IPool {
     function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 limit, bytes calldata data)
         external
@@ -47,13 +51,16 @@ contract PoolUser {
 
 /*
  * Fork tests against the real chains (spec §13). Each runs when its RPC url is set (test.mjs reads
- * them from apps/api/.env; HyperEVM's defaults to its public RPC) and is skipped otherwise:
+ * them from apps/api/.env; HyperEVM's and Avalanche's default to their public RPCs) and is skipped
+ * otherwise:
  *   - Arbitrum: the canonical deterministic deployer, the P-256 precompile present (gas measured),
  *     Circle's real MessageTransmitterV2 sending a deposit account's record, the USDT0 → USDC swap
  *     on the real 0.01% pool, a real CCTP V2 burn;
  *   - HyperEVM: NO P-256 precompile (the passkey verifies through OpenZeppelin's Solidity fallback,
  *     gas measured), a copy receiving the record Arbitrum's transmitter emitted, delivered by
  *     impersonating the MessageTransmitterV2 (Circle's attesters can't be forged on a fork);
+ *   - Avalanche: a copy receiving the record Arbitrum's transmitter emitted, Circle's real USDC burned
+ *     by the real TokenMessengerV2 to Arbitrum (its messenger has no minimum fee: `burnMinFee` 0);
  *   - every chain with a url: the factory, implementation and an account at the same address, and
  *     the build (cancun: MCOPY, PUSH0) running there.
  */
@@ -120,7 +127,8 @@ contract ForkTest is Helpers {
     // ── every chain: the same addresses, the build runs ──────────────────────────────────────
 
     function test_sameAddressesAndTheBuildRunsOnEveryChain() public {
-        string[4] memory envs = ["ARBITRUM_RPC_URL", "HYPEREVM_RPC_URL", "MAINNET_RPC_URL", "BASE_RPC_URL"];
+        string[5] memory envs =
+            ["ARBITRUM_RPC_URL", "HYPEREVM_RPC_URL", "AVALANCHE_RPC_URL", "MAINNET_RPC_URL", "BASE_RPC_URL"];
         address factory;
         address account;
         uint256 seen;
@@ -295,6 +303,61 @@ contract ForkTest is Helpers {
         a.convertBurn(250e6, 0);
         assertEq(supply - IERC20(ARB_USDC).totalSupply(), 250e6, "burned");
         assertEq(IERC20(ARB_USDC).balanceOf(address(a)), 0);
+    }
+
+    // ── Avalanche alone (a deposit chain since 2026-10-20) ───────────────────────────────────
+
+    /// The home publishes to domain 1 through Circle's real transmitter; on an Avalanche fork the copy
+    /// applies the body Circle emitted, then burns Circle's real USDC back to the home by the real
+    /// TokenMessengerV2, which has no minimum fee (`getMinFeeAmount` reverts there, read 2026-10-20).
+    function test_avalanche_aCopyAppliesTheRecordAndBurnsToTheHome() public {
+        if (!fork("ARBITRUM_RPC_URL")) return vm.skip(true);
+        DepositFactory f = deployReal();
+        DepositAccount a = DepositAccount(f.deploy(ALICE, owners()));
+        addNow(a, PASSKEY_A, wallet(WALLET_A));
+        setWithdrawal(a, PASSKEY_A, DEST);
+        vm.warp(vm.getBlockTimestamp() + 24 hours);
+        vm.recordLogs();
+        vm.prank(STRANGER);
+        a.publish(1);
+        bytes memory message = sentMessage(vm.getRecordedLogs());
+        bytes32 self = bytes32(uint256(uint160(address(a))));
+        assertEq(uint32(bytes4(slice(message, 8, 12))), 1, "destination domain: Avalanche");
+        assertEq(bytes32(slice(message, 76, 108)), self, "recipient");
+        bytes memory body = slice(message, 148, message.length);
+
+        if (!fork("AVALANCHE_RPC_URL")) return vm.skip(true);
+        assertEq(block.chainid, 43114);
+        address usdc = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
+        assertEq(IMessageTransmitter(MT).localDomain(), 1, "Circle's domain for Avalanche");
+        emit log_named_string("  P-256 precompile", precompilePresent() ? "present" : "absent");
+        DepositFactory af = deployReal();
+        assertEq(address(af), address(f), "the factory, the same address");
+        DepositAccount copy = DepositAccount(af.deploy(ALICE, owners()));
+        assertEq(address(copy), address(a), "the account, the same address");
+        assertFalse(copy.isHome());
+        (address u, uint32 local) = copy.cctpUsdc();
+        assertEq(u, usdc);
+        assertEq(local, 1);
+        (address pool,,) = copy.conversionPool();
+        assertEq(pool, address(0), "no USDT pool on Avalanche");
+
+        vm.prank(MT);
+        assertTrue(copy.handleReceiveFinalizedMessage(3, self, 2000, body));
+        assertEq(copy.withdrawalAddress(), DEST);
+        bytes32 d = keccak256("x");
+        assertTrue(copy.checkOwnerSignature(d, signWallet(WALLET_A, d)));
+        emit log_named_uint("  passkey verification gas, Avalanche", passkeyGas(copy));
+
+        assertEq(copy.burnMinFee(250e6), 0, "no minimum fee on Avalanche's messenger");
+        deal(usdc, address(copy), 250e6);
+        uint256 supply = IERC20(usdc).totalSupply();
+        vm.prank(TRANSFER);
+        uint256 g = gasleft();
+        copy.convertBurn(250e6, 3);
+        emit log_named_uint("  convertBurn gas, Avalanche to Arbitrum", g - gasleft());
+        assertEq(supply - IERC20(usdc).totalSupply(), 250e6, "burned");
+        assertEq(IERC20(usdc).balanceOf(address(copy)), 0);
     }
 
     // ── HyperEVM alone ───────────────────────────────────────────────────────────────────────

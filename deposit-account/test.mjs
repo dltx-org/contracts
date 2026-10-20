@@ -2,7 +2,8 @@
  * `pnpm test` for the deposit account: the unit tests (no fork) run whenever forge is installed; the
  * fork tests against the real chains run when Arbitrum's RPC url is present and SKIP otherwise, so
  * `turbo test` stays green on a machine without it. HyperEVM's fork uses `HYPEREVM_RPC_URL`, or the
- * public RPC (https://rpc.hyperliquid.xyz/evm, no key) when the forks run at all; Ethereum and Base
+ * public RPC (https://rpc.hyperliquid.xyz/evm, no key) when the forks run at all, and Avalanche's
+ * `AVALANCHE_RPC_URL`, or its public RPC (https://api.avax.network/ext/bc/C/rpc, no key); Ethereum and Base
  * join the every-chain test when `MAINNET_RPC_URL` and `BASE_RPC_URL` are set. The urls come from
  * `.env` at the repository root when the environment does not already carry them.
  */
@@ -13,8 +14,15 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const envFile = resolve(here, '../.env')
-const wanted = ['ARBITRUM_RPC_URL', 'HYPEREVM_RPC_URL', 'MAINNET_RPC_URL', 'BASE_RPC_URL']
+const wanted = [
+  'ARBITRUM_RPC_URL',
+  'HYPEREVM_RPC_URL',
+  'AVALANCHE_RPC_URL',
+  'MAINNET_RPC_URL',
+  'BASE_RPC_URL',
+]
 const HYPEREVM_PUBLIC_RPC = 'https://rpc.hyperliquid.xyz/evm'
+const AVALANCHE_PUBLIC_RPC = 'https://api.avax.network/ext/bc/C/rpc'
 
 if (existsSync(envFile)) {
   for (const line of readFileSync(envFile, 'utf8').split('\n')) {
@@ -80,6 +88,17 @@ if (!testedPin || testedPin !== pinOf('script/Deploy.s.sol')) {
   )
   process.exit(1)
 }
+// The seam test's fixtures are the vault's pinned build: its eight hashes are the vault project's (the
+// partner's audit L1; `test_seam_theFixturesAreThePinnedBuild` checks the files against them).
+const vaultPins = (file) =>
+  [...readFileSync(resolve(here, file), 'utf8').matchAll(/bytes32 constant (\w+_CODE) = (0x[0-9a-fA-F]+);/g)]
+    .map((m) => `${m[1]}=${m[2].toLowerCase()}`)
+    .sort()
+const seamPins = vaultPins('test/Seam.t.sol')
+if (seamPins.length !== 8 || JSON.stringify(seamPins) !== JSON.stringify(vaultPins('../strategy-vault/test/Pinned.t.sol'))) {
+  console.error('deposit-account: test/Seam.t.sol does not pin the vault project\'s eight hashes')
+  process.exit(1)
+}
 if (!process.env.ARBITRUM_RPC_URL) {
   console.log('deposit-account: fork tests skipped — ARBITRUM_RPC_URL not set')
   const unit = spawnSync('forge', ['test', '-vv', '--no-match-contract', 'ForkTest'], {
@@ -89,6 +108,7 @@ if (!process.env.ARBITRUM_RPC_URL) {
   process.exit(unit.status ?? 1)
 }
 if (!process.env.HYPEREVM_RPC_URL) process.env.HYPEREVM_RPC_URL = HYPEREVM_PUBLIC_RPC
+if (!process.env.AVALANCHE_RPC_URL) process.env.AVALANCHE_RPC_URL = AVALANCHE_PUBLIC_RPC
 const absent = ['MAINNET_RPC_URL', 'BASE_RPC_URL'].filter((k) => !process.env[k])
 if (absent.length > 0) console.log(`deposit-account: chains skipped — ${absent.join(', ')} not set`)
 const run = spawnSync('forge', ['test', '-vv'], { cwd: here, stdio: 'inherit' })

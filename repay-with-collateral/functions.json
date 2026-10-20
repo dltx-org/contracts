@@ -8,7 +8,7 @@
       "source": "src/RepayWithCollateral.sol",
       "title": "The repay-with-collateral contract",
       "brief": "Repays an Aave V3 position's debt out of its own collateral, in one transaction.",
-      "summary": "Repays an Aave V3 position's variable debt out of its own collateral in one transaction: a flash loan of the debt asset, the repay, the collateral pulled and withdrawn, exactly the loan and its premium bought back on Uniswap V3, what the swap did not spend supplied back, and the loan returned. Either all of it happens or none of it does. It acts only on the position of the address that calls it, keeps no balance between transactions and has no owner; one deployment serves one Aave pool and one swap router. The long contract of a strategy calls it to repay with collateral.",
+      "summary": "Repays an Aave V3 position's variable debt out of its own collateral in one transaction: a flash loan of the debt asset, the repay, the collateral pulled and withdrawn, exactly the loan and its premium bought back on Uniswap V3, what the swap did not spend supplied back, and the loan returned. Either all of it happens or none of it does. It acts only on the position of the address that calls it, keeps no balance between transactions and has no owner; one deployment serves one Aave pool and one swap router. Unlike the strategy contracts, it is already deployed, on Arbitrum for Aave V3, and DLTX's current product uses it; the long contract of a strategy will call that same deployment to repay with collateral.",
       "functions": {
         "POOL": {
           "does": "The Aave V3 (or SparkLend) pool it flash-loans from, repays, withdraws from and supplies to."

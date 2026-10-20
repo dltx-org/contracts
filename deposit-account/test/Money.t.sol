@@ -453,8 +453,60 @@ contract MoneyTest is Helpers {
         assertEq(usdc(address(a)), 750e6);
     }
 
+    /// Avalanche (domain 1) is a deposit chain (the operator's decision, 2026-10-20): a burn mints to
+    /// this same address there.
+    function test_aBurnMintsToThisSameAddressOnAvalanche() public {
+        vm.prank(TRANSFER);
+        a.convertBurn(250e6, 1);
+        MockTokenMessenger m = MockTokenMessenger(TM);
+        assertEq(m.amount(), 250e6);
+        assertEq(m.domain(), 1);
+        assertEq(m.mintRecipient(), bytes32(uint256(uint160(address(a)))));
+        assertEq(m.burnToken(), USDC);
+        assertEq(usdc(address(a)), 750e6);
+    }
+
+    /// On Avalanche the account burns its own USDC (Circle's native, the chain's pin) to the home,
+    /// never to Avalanche itself; it has no conversion pool, and its USDC pays a capped fee.
+    function test_onAvalancheTheAccountBurnsItsUsdcAndHasNoPool() public {
+        address avaxUsdc = 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
+        vm.chainId(43114);
+        (address u, uint32 local) = a.cctpUsdc();
+        assertEq(u, avaxUsdc);
+        assertEq(local, 1);
+        (address pool, address usdt,) = a.conversionPool();
+        assertEq(pool, address(0));
+        assertEq(usdt, address(0));
+        vm.prank(TRANSFER);
+        vm.expectRevert(DepositAccount.ConversionUnavailable.selector);
+        a.convertSwap(1e6, 0);
+
+        vm.etch(avaxUsdc, address(new MockToken()).code);
+        MockToken(avaxUsdc).mint(address(a), 300e6);
+        vm.prank(TRANSFER);
+        vm.expectRevert(DepositAccount.BadDomain.selector); // its own
+        a.convertBurn(100e6, 1);
+        vm.prank(TRANSFER);
+        a.convertBurn(100e6, 3);
+        MockTokenMessenger m = MockTokenMessenger(TM);
+        assertEq(m.domain(), 3);
+        assertEq(m.burnToken(), avaxUsdc);
+        assertEq(m.mintRecipient(), bytes32(uint256(uint160(address(a)))));
+        assertEq(MockToken(avaxUsdc).balanceOf(address(a)), 200e6);
+
+        // a signed withdrawal of Avalanche's USDC pays at most MAX_SIGNED_FEE (decision 73)
+        deliverRecord(a, 9, DEST, two(wallet(WALLET_A), passkey(PASSKEY_A))); // a copy in sync
+        Withdrawal memory w = withdrawal(a, avaxUsdc, 200e6, 51e6);
+        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
+        vm.expectRevert(DepositAccount.FeeAboveMax.selector);
+        a.withdrawSigned(w, 51e6, sig);
+        a.withdrawSigned(w, 50e6, sig);
+        assertEq(MockToken(avaxUsdc).balanceOf(FEES), 50e6);
+        assertEq(MockToken(avaxUsdc).balanceOf(DEST), 150e6);
+    }
+
     function test_aBurnToItsOwnOrANonDepositDomainIsRefused() public {
-        uint32[4] memory bad = [uint32(3), 5, 1, 4]; // its own; Solana, Avalanche, Noble
+        uint32[4] memory bad = [uint32(3), 5, 4, 17]; // its own; Solana, Noble, BNB Smart Chain (USYC only)
         for (uint256 i; i < bad.length; ++i) {
             vm.prank(TRANSFER);
             vm.expectRevert(DepositAccount.BadDomain.selector);

@@ -52,8 +52,8 @@ interface IToken {
 
 /*
  * The seam (the combined security review's brief §8): the FINAL deposit account, built here, as the owner of
- * the FINAL vault contracts, loaded from their pinned build (test/fixtures/strategy-vault-5f1fe1ae6: `forge
- * inspect <C> bytecode` in contracts/strategy-vault at fix/combined-review 5f1fe1ae6 (the approved fixes and the re-review's, solc 0.8.37), each checked against its
+ * the FINAL vault contracts, loaded from their pinned build (test/fixtures/strategy-vault-pinned: `forge
+ * inspect <C> bytecode` in contracts/strategy-vault at feat/avalanche-deposit-chain (fix/combined-review 5f1fe1ae6, the approved fixes and the re-review's, solc 0.8.37, with Avalanche's domain 1 and USDC added to the combination factory and the hub), each checked against its
  * Pinned.t.sol hash where it is pinned). On the Arbitrum fork (skipped without ARBITRUM_RPC_URL): a wallet
  * owner and a passkey owner each sign the typed `CreateVault` (its digest checked against an independent
  * EIP-712 hash), the combination factory creates the hub and the AAVE leg, the account trusts the factory and
@@ -63,15 +63,23 @@ interface IToken {
  * stale copies (the account's own suites cover them).
  */
 contract SeamTest is Helpers {
-    string constant DIR = "test/fixtures/strategy-vault-5f1fe1ae6/";
+    string constant DIR = "test/fixtures/strategy-vault-pinned/";
     uint256 constant PINNED_BLOCK = 514_790_000; // the vault's fork suites' block
     address constant MT = 0x81D40F21F12A8F0E3252Bccb954D722d4c464B64;
     address constant ARB_USDC = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
     address constant GROUP_KEY = address(0xBEEF04);
     bytes32 constant STRATEGY = keccak256("seam");
     bytes32 constant READY = keccak256("dltx.strategy-vault.ready.v1");
+    // the vault's pinned build, all eight (contracts/strategy-vault/test/Pinned.t.sol's, checked equal by
+    // test.mjs; the partner's audit L1: a fixture no test compared drifted from the build)
+    bytes32 constant REGISTRY_CODE = 0xd9d8d635144040392821ad5807a45484403fe7fa12a70bb9556e9c6aecc0a200;
+    bytes32 constant LONG_EXIT_CODE = 0xa5554ffbcbfe26275afa41f148189ca2a347cccb48c9b50bacdd1d08aea5f688;
     bytes32 constant LONG_LEG_CODE = 0xf9c31cb3659be0714a61bd486c86e39978f0c22824620fb3973e821cd4eaba6a;
-    bytes32 constant COMBINATION_CODE = 0x24a4f84b2ca4cdcd0d6a4194c71b454ef9ebca6d621bc792045eda551307b184;
+    bytes32 constant SHORT_EXIT_CODE = 0xb963a515c9467004bd9f58a163e8236a090dd6e5e477758f4d8a1c14892e68f5;
+    bytes32 constant SHORT_LEG_CODE = 0xed2cbb37949a5c1c2aa393247d96ae8722c90d3ba1ce5e61f86a7baae1a3c68d;
+    bytes32 constant COMBINATION_CODE = 0xb321a35ade28a925ea2a7167415260edb76aef1e4a0457a700ccdfb580ed692d;
+    bytes32 constant HUB_FEE_CODE = 0xead386251b7465f201678da4f35c44f0fef48c29950b5ec3d01a495d1b8e9fa0;
+    bytes32 constant HUB_CODE = 0xa994298b09c27e43fe2bc8043aed521d933d851dfa4923047b4af574aafa260c;
 
     address combination;
     address longCode;
@@ -185,8 +193,14 @@ contract SeamTest is Helpers {
     }
 
     function test_seam_theFixturesAreThePinnedBuild() public view {
-        assertEq(keccak256(_code("LongVault")), LONG_LEG_CODE);
-        assertEq(keccak256(_code("CombinationFactory")), COMBINATION_CODE);
+        assertEq(keccak256(_code("VaultRegistry")), REGISTRY_CODE, "VaultRegistry");
+        assertEq(keccak256(_code("LongVaultExit")), LONG_EXIT_CODE, "LongVaultExit");
+        assertEq(keccak256(_code("LongVault")), LONG_LEG_CODE, "LongVault");
+        assertEq(keccak256(_code("ShortVaultExit")), SHORT_EXIT_CODE, "ShortVaultExit");
+        assertEq(keccak256(_code("ShortVault")), SHORT_LEG_CODE, "ShortVault");
+        assertEq(keccak256(_code("CombinationFactory")), COMBINATION_CODE, "CombinationFactory");
+        assertEq(keccak256(_code("StrategyHubFee")), HUB_FEE_CODE, "StrategyHubFee");
+        assertEq(keccak256(_code("StrategyHub")), HUB_CODE, "StrategyHub");
     }
 
     function test_seam_walletOwner() public {

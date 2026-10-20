@@ -29,21 +29,20 @@ contract CombinedReviewRecordTest is OwnerRecordTest {
 }
 
 contract CombinedReviewMoneyTest is MoneyTest {
-    /// CR-A2: a stolen transfer key burns back and forth; each burn pays Circle up to 10 bp and nothing
-    /// counts them.
-    function test_CR_A2_repeatedBurnsEachPayTheCapWithNoBudget() public {
+    /// CR-A2, fixed by the partner's audit M3: a stolen transfer key burns back and forth; the day's
+    /// fees are capped at 10 bp of the balance, so the second fee-paying round trip of the day is refused.
+    function test_CR_A2_repeatedBurnsBudgetedPerDay() public {
         MockTokenMessenger m = MockTokenMessenger(TM);
         m.setMinFee(true, 10_000); // Circle's minimum at 10 bp, the cap itself
         MockToken(USDC).mint(address(a), 100e6);
-        uint256 paid;
-        for (uint256 i; i < 10; ++i) {
-            uint256 amt = usdc(address(a));
-            vm.prank(TRANSFER);
-            a.convertBurn(amt, 2);
-            paid += m.maxFee();
-            MockToken(USDC).mint(address(a), amt - m.maxFee()); // the mint back, less Circle's fee
-        }
-        assertGt(paid, 0.99e6, "ten burns at 10 bp each: about 1 % of the balance to Circle, unbudgeted");
+        uint256 amt = usdc(address(a));
+        vm.prank(TRANSFER);
+        a.convertBurn(amt, 2);
+        MockToken(USDC).mint(address(a), amt - m.maxFee()); // the mint back, less Circle's fee
+        amt = usdc(address(a));
+        vm.prank(TRANSFER);
+        vm.expectRevert(DepositAccount.BurnFeeTooHigh.selector);
+        a.convertBurn(amt, 2);
     }
 }
 

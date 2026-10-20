@@ -35,9 +35,15 @@ interface IDepositOwner {
     /// addition still within its 24 hours (decision 31) is not, and can't sign either.
     function isCredential(Credential calldata c) external view returns (bool);
 
-    /// The home always; a copy once it has received the home's record by Circle. An unsynced copy
-    /// accepts no owner signature (`checkOwnerSignature` false, `isCredential` false): on HyperEVM, no
-    /// owner action, no `BeginExit` by signature and no vault creation until the first `publish`.
+    /// `isCredential` by the credential's id, keccak256(abi.encode(kind, x, y)): what a vault keeps of
+    /// the credential that signed an action it applies later (the Hyperliquid leg's agent choice).
+    function isCredentialId(bytes32 id) external view returns (bool);
+
+    /// The home always; a copy while the home's record it received was published within 30 days
+    /// (`RECORD_TTL`, the partner's audit M1). An unsynced copy (never reached, or expired) accepts no owner
+    /// signature (`checkOwnerSignature`, `isCredential`, `isCredentialId` false) and names no withdrawal
+    /// address: on HyperEVM, no owner action, no `BeginExit` by signature and no vault creation until a
+    /// fresh `publish` arrives.
     function synced() external view returns (bool);
 }
 

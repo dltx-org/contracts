@@ -31,7 +31,7 @@ contract Deploy is Script {
     );
     bytes32 constant FACTORY_SALT = keccak256("dltx.deposit-factory");
     /// The pinned build (test/DepositFactory.t.sol `PINNED_CREATION_CODE_HASH`).
-    bytes32 constant PINNED_CREATION_CODE_HASH = 0x5abc274f66b2dcae92b61e7fdb0aa38b8f6b72b36e1f0f7c0845d3ca2495b955;
+    bytes32 constant PINNED_CREATION_CODE_HASH = 0x92b682f658bc0b9f7f0493763215844e9adb48a369ca41a20d3b690fcc955db6;
 
     function run() external returns (DepositFactory factory) {
         address recovery = vm.envAddress("RECOVERY");

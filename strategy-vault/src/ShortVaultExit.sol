@@ -184,19 +184,35 @@ contract ShortVaultExit is ShortVaultState {
                 HyperCore.sendAsset(address(this), dex, HyperCore.SPOT_DEX, token, uint64(m.accountValue) * 100);
             }
         }
-        // the budget B (§8.4): fixed once, at the first move out of spot after a drop-out, once DEX 0's
-        // margin is on spot (or its transfer has been tried for two pacing windows since the first try:
-        // unified mode; the pacing timestamp itself is refreshed by every try, the combined review's
-        // CR-X2); less the fee allowance too, so a first transfer's fee is paid above R, never out of it
-        if (s.budgetMode && !budgetSet) {
-            uint256 first = marginTriedAt;
-            if (s.wd == 0 || (first != 0 && block.number >= first + 2 * PACING_BLOCKS)) {
-                uint256 keep = uint256(s.reserve) + FEE_ALLOWANCE;
-                budget = s.spotUsdc > keep ? uint64(s.spotUsdc - keep) : 0;
-                budgetSet = true;
-            }
+        // budget mode (§8.4): spot keeps a floor, R plus the fee allowance (so a first transfer's fee is
+        // paid above R, never out of it), fixed once DEX 0's margin is on spot (or its transfer has been
+        // tried for two pacing windows since the first try: unified mode; the pacing timestamp itself is
+        // refreshed by every try, the combined review's CR-X2). What is above it may leave, later arrivals
+        // included (CR-D5), less what was sent and not yet seen arriving on HyperEVM: a send is released
+        // only once as much USDC has arrived here from outside the strategy (Circle's mints, counted per
+        // link net of its fee, set aside), never by time alone (the partner's audit M4). USDC that is not this send (a
+        // stranger's) still only goes to the hub, the owner's. A send that never executes stays reserved
+        // until the owner's signed RELEASE_RESERVATION.
+        uint256 arrived = sentTo[0] + IERC20(USDC).balanceOf(address(this));
+        uint256 minted = receivedFromOthers;
+        for (uint256 k; k < 4; ++k) {
+            minted += receivedFrom[k] - feesFrom[k]; // net, as they arrived
         }
-        uint64 room = !s.budgetMode ? type(uint64).max : (budgetSet ? budget - spent : 0);
+        uint64 room = type(uint64).max;
+        if (s.budgetMode) {
+            if (!floorSet) {
+                uint256 first = marginTriedAt;
+                if (s.wd == 0 || (first != 0 && block.number >= first + 2 * PACING_BLOCKS)) {
+                    floor = uint256(s.reserve) + FEE_ALLOWANCE;
+                    floorSet = true;
+                }
+            }
+            // released whole once as much has arrived from outside the strategy since the first unseen send
+            // (compared, never subtracted: before the exit, mints may have left for HyperCore uncounted); a
+            // part is never released, so a stranger's smaller credit frees nothing
+            if (reserved != 0 && (arrived + mintedMark) * 100 >= (arrivedMark + minted) * 100 + reserved) reserved = 0;
+            room = floorSet && s.spotUsdc > floor + reserved ? uint64(s.spotUsdc - floor - reserved) : 0;
+        }
         uint64 spotFee = HYPE_FEE_RESERVE;
         // HYPE from zero: the fewest 0.01 steps worth Hyperliquid's $10 order minimum at the HYPE perp's
         // oracle + the bound (`_purchase`), at most 3 purchases
@@ -205,7 +221,6 @@ contract ShortVaultExit is ShortVaultState {
             if (steps > 0 && cost <= s.spotUsdc && cost <= room && _due(K_BUY, 0, 0)) {
                 HyperCore.orderIoc(SPOT_ASSET_OFFSET + 107, true, limit, steps * STEP_WEI, false);
                 purchases++;
-                if (s.budgetMode) spent += cost;
                 room -= cost;
             }
         }
@@ -228,7 +243,10 @@ contract ShortVaultExit is ShortVaultState {
                 HyperCore.sendAsset(USDC_SYSTEM, HyperCore.SPOT_DEX, HyperCore.SPOT_DEX, USDC_TOKEN, amount);
                 lastCoreMove = uint64(block.number);
                 toEvmRead = s.spotUsdc;
-                if (s.budgetMode) spent += amount;
+                if (s.budgetMode) {
+                    if (reserved == 0) (arrivedMark, mintedMark) = (arrived, minted);
+                    reserved += amount;
+                }
             }
         }
         // the pinned tokens' sales: HYPE above its fee reserve; the stablecoins (not in budget mode: in
@@ -320,7 +338,7 @@ contract ShortVaultExit is ShortVaultState {
             (,, uint64 cost) = _purchase(s.hypePx);
             if (
                 purchases >= MAX_PURCHASES || cost == 0 || cost > s.spotUsdc
-                    || (s.budgetMode && budgetSet && budget - spent < cost)
+                    || (s.budgetMode && floorSet && s.spotUsdc < floor + reserved + cost)
             ) flags |= F_NEEDS_HYPE;
         }
         if (s.gate && s.wd == 0 && s.value0 > DUST_VALUE) flags |= F_MARGIN_HELD;

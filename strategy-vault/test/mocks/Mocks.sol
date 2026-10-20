@@ -31,6 +31,7 @@ contract MockOwner {
 
     function setWallet(address w, bool on) external {
         wallets[w] = on;
+        walletOf[walletCred(w)] = w;
     }
 
     function setWithdrawalAddress(address w) external {
@@ -46,6 +47,14 @@ contract MockOwner {
 
     function isCredential(Credential calldata c) external view returns (bool) {
         return !unsynced && c.kind == 1 && c.y == bytes32(0) && wallets[address(uint160(uint256(c.x)))];
+    }
+
+    /// A wallet's id (`walletCred`) only, as `isCredential`.
+    mapping(bytes32 => address) public walletOf;
+
+    function isCredentialId(bytes32 id) external view returns (bool) {
+        address w = walletOf[id];
+        return !unsynced && w != address(0) && wallets[w];
     }
 
     function domainSeparator() external view returns (bytes32) {

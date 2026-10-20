@@ -154,4 +154,7 @@ library OwnerMessages {
     uint8 internal constant ALLOW_EXECUTION = 2;
     uint8 internal constant REPLACE_AGENT = 3; // the Hyperliquid leg only: the burner at once, others after 24 h
     uint8 internal constant CANCEL_AGENT = 4; // the Hyperliquid leg only
+    /// The Hyperliquid leg only, in budget mode: the owner releases the exit's pending reservation (sends
+    /// from spot never seen to arrive), asserting none will still execute (the partner's audit M4)
+    uint8 internal constant RELEASE_RESERVATION = 5;
 }

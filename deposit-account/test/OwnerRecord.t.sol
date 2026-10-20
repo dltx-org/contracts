@@ -505,6 +505,30 @@ contract OwnerRecordTest is Helpers {
         assertEq(a.version(), 3, "the same version too");
     }
 
+    /// Avalanche (domain 1, chain 43114) holds a copy like any deposit chain: the home publishes to
+    /// domain 1, and the copy there applies the record and trusts the home's credentials.
+    function test_theRecordIsCopiedToAvalanche() public {
+        setWithdrawalNow(a, PASSKEY_A, DEST);
+        addNow(a, WALLET_A, wallet(WALLET_B));
+        a.publish(1);
+        assertEq(mt.lastDomain(), 1);
+        assertEq(mt.lastRecipient(), self());
+        bytes memory body = mt.body();
+
+        vm.revertToState(copyGenesis);
+        vm.chainId(43114);
+        assertFalse(a.isHome());
+        assertFalse(a.synced());
+        deliver(body);
+        assertEq(a.version(), 3);
+        assertEq(a.withdrawalAddress(), DEST);
+        assertTrue(a.isCredential(wallet(WALLET_B)));
+        bytes32 d = keccak256("x");
+        assertTrue(a.checkOwnerSignature(d, signPasskey(PASSKEY_A, d)));
+        vm.expectRevert(DepositAccount.NotHome.selector);
+        this.setW(PASSKEY_A, DEST2);
+    }
+
     function deliver(bytes memory body) internal {
         vm.prank(MT);
         assertTrue(a.handleReceiveFinalizedMessage(3, self(), 2000, body));
@@ -634,7 +658,7 @@ contract OwnerRecordTest is Helpers {
         vm.expectRevert(DepositAccount.NotSynced.selector);
         copy.revokeTransfer(nonce, deadline, sig);
         vm.prank(vm.addr(WALLET_A));
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccount.NotSynced.selector);
         copy.withdraw(address(0), 0);
 
         deliver(body);

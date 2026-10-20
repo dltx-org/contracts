@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {VaultBase} from "./VaultBase.sol";
 import {ShortVaultState} from "./ShortVaultState.sol";
 import {ShortVaultExit} from "./ShortVaultExit.sol";
+import {IDepositOwner} from "./interfaces/IDepositOwner.sol";
 import {ICoreDepositWallet, IERC20} from "./interfaces/Protocols.sol";
 import {HyperCore} from "./lib/HyperCore.sol";
 import {Assets, Holding, Legs, OwnerMessages, ParamsTypes, ShortParams} from "./lib/VaultTypes.sol";
@@ -165,9 +166,12 @@ contract ShortVault is VaultBase, ShortVaultState {
     /// `replaceAgent` with the burner cuts trading off at once and drops every pending choice, the
     /// owner's included (CR-D3); any other agent takes effect after 24 hours (`applyOwnerAgent`), in exit
     /// too, cancellable by any owner credential (`cancelAgent`), so a stolen credential can't hand the
-    /// account to an agent of its own at once. `cancelAgent` drops both DLTX's proposal and the owner's
-    /// pending choice; each credential signs its own nonce, so no other can starve it (CR-E1).
-    function _agentAction(uint8 action, address next) internal override {
+    /// account to an agent of its own at once, and only while the credential that chose it still stands
+    /// (the partner's audit M2): removing a stolen credential voids its pending choice. `cancelAgent`
+    /// drops both DLTX's proposal and the owner's pending choice; each credential signs its own nonce, so
+    /// no other can starve it (CR-E1). `RELEASE_RESERVATION` frees the budget mode's reservation
+    /// (sends from spot never seen to arrive) on the owner's word that none will still execute (M4).
+    function _agentAction(uint8 action, address next, bytes32 credential) internal override {
         if (action == OwnerMessages.REPLACE_AGENT) {
             if (next == address(0)) revert NoAgent();
             pendingAgent = address(0);
@@ -177,22 +181,27 @@ contract ShortVault is VaultBase, ShortVaultState {
             } else {
                 ownerAgent = next;
                 ownerAgentAt = uint64(block.timestamp);
+                ownerAgentBy = credential;
                 emit AgentProposed(next, block.timestamp + AGENT_DELAY);
             }
         } else if (action == OwnerMessages.CANCEL_AGENT) {
             pendingAgent = address(0);
             ownerAgent = address(0);
             emit AgentCancelled();
+        } else if (action == OwnerMessages.RELEASE_RESERVATION) {
+            reserved = 0;
         } else {
             revert Unsupported();
         }
     }
 
-    /// Anyone, once the owner's choice has stood 24 hours.
+    /// Anyone, once the owner's choice has stood 24 hours and while the credential that chose it is still
+    /// one in this chain's record (M2).
     function applyOwnerAgent() external nonReentrant {
         address next = ownerAgent;
         if (next == address(0)) revert NoAgent();
         if (block.timestamp < uint256(ownerAgentAt) + AGENT_DELAY) revert TooEarly();
+        if (!IDepositOwner(owner).isCredentialId(ownerAgentBy)) revert NotAllowed();
         ownerAgent = address(0);
         _useAgent(next);
     }
@@ -202,20 +211,8 @@ contract ShortVault is VaultBase, ShortVaultState {
         return address(uint160(uint256(keccak256(abi.encode("dltx.strategy-vault.burner", address(this))))));
     }
 
-    function _useAgent(address next) internal {
-        if (exiting) exitAgent = next;
-        _setAgent(next);
-    }
-
     function _onRevoke() internal override {
         pendingAgent = address(0);
-    }
-
-    function _setAgent(address next) internal {
-        HyperCore.addApiWallet(next, AGENT_NAME);
-        agent = next;
-        agentEverSet = true;
-        emit AgentSet(next);
     }
 
     /// Entering the exit: DLTX's pending proposal cancelled, the agent replaced at once by a burner

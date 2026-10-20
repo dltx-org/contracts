@@ -59,7 +59,8 @@ contract CombinationFactoryTest is Fixture {
         for (uint256 i; i < 5; ++i) five[i] = p[1];
         vm.expectRevert(CombinationFactory.BadPins.selector);
         _factoryWith(_hubDomains(), five);
-        // no hub chain; a hub chain twice; a hub chain without the owner's deposit contract (Avalanche 1)
+        // no hub chain; a hub chain twice; a hub chain without the owner's deposit contract (Solana 5,
+        // BNB Smart Chain 17)
         vm.expectRevert(CombinationFactory.BadPins.selector);
         _factoryWith(new uint32[](0), p);
         uint32[] memory twice = new uint32[](2);
@@ -67,10 +68,12 @@ contract CombinationFactoryTest is Fixture {
         vm.expectRevert(CombinationFactory.BadPins.selector);
         _factoryWith(twice, p);
         vm.expectRevert(CombinationFactory.BadPins.selector);
-        _factoryWith(_domains(1), p);
+        _factoryWith(_domains(5), p);
+        vm.expectRevert(CombinationFactory.BadPins.selector);
+        _factoryWith(_domains(17), p);
         // a leg on a chain without the owner's deposit contract
         p = _pins();
-        p[0].domain = 1;
+        p[0].domain = 5;
         vm.expectRevert(CombinationFactory.BadPins.selector);
         _factoryWith(_hubDomains(), p);
         // this chain's leg code under another hash
@@ -102,6 +105,19 @@ contract CombinationFactoryTest is Fixture {
         new CombinationFactory(address(0), address(hubCode), address(hubCode).codehash, ParamsTypes.HUB_NAME, ParamsTypes.HUB_FIELDS, ParamsTypes.HUB_COUNT, _hubDomains(), _pins(), _noPrices(), _noSequencers());
         vm.expectRevert(CombinationFactory.ZeroAddress.selector);
         new CombinationFactory(address(registry), address(0), address(hubCode).codehash, ParamsTypes.HUB_NAME, ParamsTypes.HUB_FIELDS, ParamsTypes.HUB_COUNT, _hubDomains(), _pins(), _noPrices(), _noSequencers());
+    }
+
+    /// Avalanche (domain 1) is a deposit chain since 2026-10-20 (`DepositAccount._depositDomain`): a hub
+    /// and a leg may be pinned there. It is no rollup, so no sequencer pin is required for its hub.
+    function test_pins_avalancheIsADepositChain() public {
+        uint32[] memory two = new uint32[](2);
+        (two[0], two[1]) = (ARB_DOMAIN, 1);
+        CombinationFactory.LegPin[] memory p = _pins();
+        p[0].domain = 1; // another chain's code: data here
+        CombinationFactory f = new CombinationFactory(
+            address(registry), address(hubCode), address(hubCode).codehash, ParamsTypes.HUB_NAME, ParamsTypes.HUB_FIELDS, ParamsTypes.HUB_COUNT, two, p, _prices(two), _sequencers(_hubDomains())
+        );
+        assertEq(f.leg(0).domain, 1);
     }
 
     /// Another chain's codes are that chain's copy to check: here they are data.

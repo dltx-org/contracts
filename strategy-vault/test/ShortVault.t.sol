@@ -977,10 +977,11 @@ contract ShortVaultTest is Fixture {
         assertEq(_watched().length, 0);
     }
 
-    /// No signed close: after 7 days DEX 1 drops out of the gate. The rest leaves within the budget
-    /// B = available − R, fixed once; a delayed transfer, then an unrelated credit and a late CCTP
-    /// arrival release nothing: no send beyond B.
-    function test_hip3_dropOut_budgetFixedOnce_neverRefilled() public {
+    /// No signed close: after 7 days DEX 1 drops out of the gate. Spot keeps the floor R + the fee
+    /// allowance, fixed once; what is above it leaves, less what was sent and not yet seen arriving on
+    /// HyperEVM (the partner's audit M4): a delayed transfer and unrelated HyperEVM credits smaller than it
+    /// release nothing; once its USDC has arrived, a later arrival on spot leaves too (CR-D5).
+    function test_hip3_dropOut_floorFixedOnce_sendReservedUntilSeen() public {
         address v = address(vault);
         // above 10× leverage: 10% of notional (55 USD) exceeds the margin used (20)
         core.setMargin(1, v, 60_000_000, 20_000_000, 550_000_000);
@@ -997,38 +998,43 @@ contract ShortVaultTest is Fixture {
         vm.warp(vm.getBlockTimestamp() + 7 days);
         _pace();
         r = _step();
-        // R = 1.1 × max(20, 55) = 60.5 USDC; B = 200 − 60.5 − 1.05 (the fee allowance) = 138.45
-        assertTrue(vault.budgetSet());
-        assertEq(vault.budget(), 13_845_000_000);
-        assertTrue(_has(r, _sendAsset(USDC_SYSTEM, SPOT, SPOT, 0, 13_845_000_000)), "only B leaves");
+        // R = 1.1 × max(20, 55) = 60.5 USDC; the floor 60.5 + 1.05 (the fee allowance); 138.45 leaves
+        assertTrue(vault.floorSet());
+        assertEq(vault.floor(), 6_155_000_000);
+        assertTrue(_has(r, _sendAsset(USDC_SYSTEM, SPOT, SPOT, 0, 13_845_000_000)), "what is above the floor");
+        assertEq(vault.reserved(), 13_845_000_000);
         (,, uint256 flags) = _state();
         assertEq(flags & F_BUDGET, F_BUDGET);
 
         // the transfer is delayed past the pacing; an unrelated 50 USDC credit lands on HyperEVM, and a
-        // late CCTP arrival too: nothing is released
+        // late arrival too (57 < 138.45): nothing is released
         usdc.mint(v, 50e6);
         usdc.mint(v, 7e6);
         _pace();
         r = _step();
-        assertEq(_countId(r, 13), 0, "the budget is spent: no second send");
-        // then the delayed transfer executes; more USDC reaches spot (DEX 0's last margin): still nothing
+        assertEq(_countId(r, 13), 0, "the send is reserved: no second send");
+        assertEq(vault.reserved(), 13_845_000_000);
+        // then the delayed transfer executes (its 138.45 USDC arrive on HyperEVM) and 10 USDC more
+        // reach spot (DEX 0's last margin): the reservation is released and the 10 leave, the floor kept
         core.setSpot(v, 0, 20_000_000_000 - 13_845_000_000 + 1_000_000_000);
+        usdc.mint(v, 138_450_000);
         _pace();
         r = _step();
-        assertEq(_countId(r, 13), 0);
-        assertEq(vault.spent(), 13_845_000_000);
-        // the owner's close flattens DEX 1: the budget ends and the rest leaves
+        assertEq(vault.reserved(), 1_000_000_000, "the new send reserved, the old one seen");
+        assertTrue(_has(r, _sendAsset(USDC_SYSTEM, SPOT, SPOT, 0, 1_000_000_000)), "the later arrival leaves");
+        // the owner's close flattens DEX 1: the budget mode ends and the rest leaves
+        core.setSpot(v, 0, 6_155_000_000);
         core.setMargin(1, v, 59_000_000, 0, 0);
         _pace();
         r = _stepWith(a);
         assertTrue(_has(r, _sendAsset(v, 1, SPOT, 0, 5_900_000_000)), "DEX 1's collateral back");
-        assertTrue(_has(r, _sendAsset(USDC_SYSTEM, SPOT, SPOT, 0, 7_155_000_000)), "the rest, unbudgeted");
+        assertTrue(_has(r, _sendAsset(USDC_SYSTEM, SPOT, SPOT, 0, 6_155_000_000)), "the rest, with no floor");
     }
 
-    function test_hip3_dropOut_purchaseCountedInTheBudget() public {
+    function test_hip3_dropOut_purchaseWithinTheRoom() public {
         address v = address(vault);
         core.setMargin(1, v, 60_000_000, 20_000_000, 550_000_000);
-        core.setSpot(v, 0, 7_500_000_000); // 75 USDC: B = 75 − 60.5 − 1.05 = 13.45
+        core.setSpot(v, 0, 7_500_000_000); // 75 USDC: above the floor (60.5 + 1.05), 13.45
         _beginExit();
         ShortVaultState.ExitArgs memory a;
         a.dexes = new ShortVaultState.DexHint[](1);
@@ -1037,14 +1043,14 @@ contract ShortVaultTest is Fixture {
         vm.warp(vm.getBlockTimestamp() + 7 days);
         _pace();
         bytes[] memory r = _step();
-        assertEq(vault.budget(), 1_345_000_000);
-        assertTrue(_has(r, _order(10_107, true, HYPE_BUY_PX, HYPE_BUY_SZ, false)));
-        assertEq(vault.spent(), 1_053_858_000, "the purchase counted at its limit");
+        assertEq(vault.floor(), 6_155_000_000);
+        assertTrue(_has(r, _order(10_107, true, HYPE_BUY_PX, HYPE_BUY_SZ, false)), "the purchase fits the room");
+        assertEq(vault.reserved(), 0, "a purchase is no send");
         core.setSpot(v, HYPE, 13_000_000);
         core.setSpot(v, 0, 7_500_000_000 - 1_043_000_000);
         _pace();
         r = _step();
-        assertTrue(_has(r, _sendAsset(USDC_SYSTEM, SPOT, SPOT, 0, 291_142_000)), "what's left of B");
+        assertTrue(_has(r, _sendAsset(USDC_SYSTEM, SPOT, SPOT, 0, 302_000_000)), "what is above the floor after it");
     }
 
     // ── the first-transfer fee (§5, §15: option (c)) ─────────────────────────────────────────────────
@@ -1123,8 +1129,9 @@ contract ShortVaultTest is Fixture {
         assertEq(core.spot(v, HYPE), 20_000);
     }
 
-    /// Budget mode: B leaves the allowance on spot above R, so a first transfer's fee is paid from it,
-    /// never from the reserve the dropped-out position keeps; `spent` counts what was sent, the fee aside.
+    /// Budget mode: the floor keeps the allowance on spot above R, so a first transfer's fee is paid from
+    /// it, never from the reserve the dropped-out position keeps; `reserved` counts what was sent, the fee
+    /// aside, until it is seen on HyperEVM.
     function test_firstFee_budgetMode_feePaidAboveTheReserve() public {
         address v = address(vault);
         writer.playFirstFee(FIRST_FEE);
@@ -1139,18 +1146,17 @@ contract ShortVaultTest is Fixture {
         vm.warp(vm.getBlockTimestamp() + 7 days);
         _pace();
         bytes[] memory r = _step();
-        assertEq(vault.budget(), 13_845_000_000, "200 - 60.5 - 1.05");
+        assertEq(vault.floor(), 6_155_000_000, "60.5 + 1.05");
         assertTrue(_has(r, _sendAsset(USDC_SYSTEM, SPOT, SPOT, 0, 13_845_000_000)));
-        assertEq(writer.landed(), 1, "B lands though it is the first transfer");
-        assertEq(vault.spent(), 13_845_000_000);
+        assertEq(writer.landed(), 1, "it lands though it is the first transfer");
+        assertEq(vault.reserved(), 13_845_000_000);
         uint64 left = core.spot(v, 0);
         assertEq(left, 6_050_000_000 + 105_000_000 - FIRST_FEE);
         assertGe(left, 6_050_000_000, "R intact");
-        // the read moved, but the budget is spent: nothing more leaves while DEX 1 holds its position
+        // the read moved, but nothing is above the floor: nothing more leaves while DEX 1 holds its position
         _pace();
         r = _step();
         assertEq(_countId(r, 13), 0);
-        assertEq(vault.spent(), 13_845_000_000);
     }
 
     /// The fee already paid (custody creation's small move, option (a)): every send is the whole read,

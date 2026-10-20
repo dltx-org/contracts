@@ -9,7 +9,7 @@
     "vaultFactory": "The strategy contract factory.",
     "strategyId": "The strategy's id.",
     "configHash": "The hash of the strategy contract's configuration, as the owner signed it.",
-    "domain": "A chain, by Circle's CCTP domain number (Ethereum 0, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19).",
+    "domain": "A chain, by Circle's CCTP domain number (Ethereum 0, Avalanche 1, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19).",
     "id": "An authorisation's id: a counter per account, given by `authoriseStrategy` at the home and the same on every chain.",
     "vaultKey": "The key of an allowance, as `vaultKey` computes it from the factory, the strategy id and the configuration hash.",
     "digest": "The EIP-712 digest that was signed (see `hashTypedData`).",
@@ -28,7 +28,7 @@
       "source": "src/DepositAccount.sol",
       "title": "The deposit contract",
       "brief": "Each user's own contract: their balance and their owner record, at the same address on every supported chain.",
-      "summary": "Each user's own contract, at the same address on every supported chain. It holds the user's balance and the owner record: one to four credentials (passkeys or wallets) and the withdrawal address. The copy on Arbitrum is the **home**: every change to the record is signed and accepted there, waits 24 hours, and reaches the other chains' copies by a Circle message the home sends. Money leaves only to the withdrawal address, to a strategy contract the owner authorised (within the amount signed for), as a fee the owner signed, into the pinned USDT to USDC pool, or by Circle's bridge to this same address on another supported chain. There is no other call: no arbitrary call, no upgrade, no admin.",
+      "summary": "Each user's own contract, at the same address on every supported chain. It holds the user's balance and the owner record: one to four credentials (passkeys or wallets) and the withdrawal address. The copy on Arbitrum is the **home**: every change to the record is signed and accepted there, waits 24 hours, and reaches the other chains' copies by a Circle message the home sends; a copy trusts the record it holds for 30 days after the home sent it, and the same record sent again renews it. Money leaves only to the withdrawal address, to a strategy contract the owner authorised (within the amount signed for), as a fee the owner signed, into the pinned USDT to USDC pool, or by Circle's bridge to this same address on another supported chain. There is no other call: no arbitrary call, no upgrade, no admin.",
       "functions": {
         "WALLET": {
           "does": "The credential kind of a wallet: `x` is its address, left-padded; `y` is zero."
@@ -64,7 +64,10 @@
           "does": "The conversion's bound, in basis points under 1 USD per USDT: a swap never accepts less than 998 USDC per 1,000 USDT."
         },
         "BURN_FEE_CAP_BP": {
-          "does": "The most a bridge transfer may pay Circle, in basis points of the amount (0.1%)."
+          "does": "The most Circle's fees may take, in basis points (0.1%): of each bridge transfer's amount, and, per UTC day, of the highest USDC balance seen at a fee-paying burn that day."
+        },
+        "RECORD_TTL": {
+          "does": "How long a copy trusts the owner record it holds after the home sent it: 30 days. Past it the copy reads as unsynced (no owner signature, no local action, no withdrawal, no withdrawal address) until the home's record arrives again, even unchanged. It bounds how long a credential removed or an address replaced at the home stays usable on a chain the change has not reached."
         },
         "ADD_CREDENTIAL_TYPEHASH": {
           "does": "The EIP-712 type the owner signs to add a credential."
@@ -114,6 +117,9 @@
         "transferRevoked": {
           "does": "Whether the owner has revoked the transfer key on this chain."
         },
+        "recordPublishedAt": {
+          "does": "When the home sent the owner record this copy holds, as a Unix time in seconds; zero at the home and on a copy that has never received one. The copy is synced until this time plus `RECORD_TTL` (30 days)."
+        },
         "allowance": {
           "does": "What the transfer key may still pay one strategy contract in this chain's USDC, by the key `vaultKey` computes."
         },
@@ -137,7 +143,7 @@
           "does": "Whether this copy is the home (this chain is Arbitrum)."
         },
         "synced": {
-          "does": "Whether this copy trusts its credentials: always at the home; on another chain once the home's record has reached it."
+          "does": "Whether this copy trusts its credentials: always at the home; on another chain while the home's record it last received was sent within the last 30 days (`RECORD_TTL`). A copy that has never received one, or whose record is older, accepts no owner signature, no local action and no withdrawal, and names no withdrawal address."
         },
         "recordNonceOf": {
           "does": "A credential's next record-change nonce (used at the home)."
@@ -174,7 +180,7 @@
           "does": "The credentials in effect now: an addition past its 24 hours counts, a removal past its 24 hours does not, settled in storage or not. On a copy not yet synced, the first owner set, which it does not trust."
         },
         "withdrawalAddress": {
-          "does": "The withdrawal address in effect now (zero until one is set and its 24 hours have passed)."
+          "does": "The withdrawal address in effect now: zero until one is set and its 24 hours have passed, and zero on an unsynced copy (never reached, or its record older than 30 days)."
         },
         "pendingWithdrawalAddress": {
           "does": "A withdrawal-address change still waiting for its 24 hours, and when it takes effect (zeros if none).",
@@ -193,7 +199,13 @@
           "does": "The owner record's version in effect now, counting changes past their 24 hours; a copy is up to date when its version equals the home's."
         },
         "isCredential": {
-          "does": "Whether this credential is one in effect that this copy trusts."
+          "does": "Whether this credential is one in effect that this copy trusts: false on an unsynced copy, an expired one included."
+        },
+        "isCredentialId": {
+          "does": "`isCredential` by the credential's id (`credentialId`): what a strategy contract keeps of the credential that signed an action it applies later, such as the Hyperliquid leg's agent choice. False on an unsynced copy.",
+          "params": {
+            "id": "The credential's id, the hash of its kind, `x` and `y` (`credentialId`)."
+          }
         },
         "domainSeparator": {
           "does": "The EIP-712 domain of the owner's messages: name \"DLTX Owner\", version \"1\", this contract's address, and no chain id."
@@ -202,7 +214,7 @@
           "does": "The EIP-712 digest a credential signs, for a given struct hash, in this account's domain."
         },
         "checkOwnerSignature": {
-          "does": "Whether a credential in effect, and trusted on this chain, signed this digest. Never reverts on a malformed signature. The strategy contracts and their factory check the owner's other messages through it."
+          "does": "Whether a credential in effect, and trusted on this chain, signed this digest: false on an unsynced copy, an expired one included. Never reverts on a malformed signature. The strategy contracts and their factory check the owner's other messages through it."
         },
         "addCredential": {
           "caller": "owner",
@@ -265,18 +277,18 @@
         },
         "publish": {
           "caller": "anyone",
-          "does": "Sends the owner record in effect (credentials, withdrawal address, version, and the time it was sent) to this same address on another chain, by a Circle message: no burn, no fee, finalized.",
-          "who": "Anyone.",
+          "does": "Sends the owner record in effect (credentials, withdrawal address, version, and the time it was sent) to this same address on another chain, by a Circle message: no burn, no fee, finalized. Sending an unchanged record renews that copy for another 30 days (`RECORD_TTL`).",
+          "who": "Anyone: the owner can keep a copy current, or renew it, without DLTX.",
           "when": "At the home only, to any domain but Arbitrum's own. Changes past their 24 hours are settled first, and a pending addition is never sent."
         },
         "handleReceiveFinalizedMessage": {
           "caller": "circle",
-          "does": "Receives the home's message at a copy: either the owner record, which replaces the copy's credentials, withdrawal address and version, or an authorisation, which adds its allowance and trusts its factory on this chain. A message it does not take is ignored without reverting, so it cannot block the next one.",
+          "does": "Receives the home's message at a copy: either the owner record, which replaces the copy's credentials, withdrawal address and version and renews the copy for 30 days from the time the home sent it, or an authorisation, which adds its allowance and trusts its factory on this chain. A message it does not take is ignored without reverting, so it cannot block the next one.",
           "who": "Circle's message transmitter, delivering a message that this same address sent from Arbitrum. Anyone may relay Circle's attested message to the transmitter.",
           "when": "On a copy only (never at the home), at the finalized threshold.",
           "checks": [
             "Sent from domain 3 (Arbitrum) by this same address.",
-            "A record: its first is taken at any version if the home sent it at or after this copy's deployment; after that, only a strictly higher version. One to four well-shaped credentials.",
+            "A record: its first is taken at any version if the home sent it at or after this copy's deployment; after that, a strictly higher version, or the same version sent later than the one held, which renews the copy (`RECORD_TTL`). An older version, or one sent no later than the record held, is ignored. One to four well-shaped credentials.",
             "An authorisation: only once the copy holds a record (otherwise it reverts, so the message can be relayed again later), and each id once. A non-zero factory and configuration, on a chain with Circle USDC. The allowance adds up, saturating rather than overflowing."
           ],
           "params": {
@@ -314,7 +326,7 @@
           "when": "At the home only, before the signature's deadline.",
           "checks": [
             "A non-zero factory and configuration hash, and an amount above zero and at most `MAX_GRANT`.",
-            "The chain is a supported deposit chain: Ethereum, OP Mainnet, Arbitrum, Base, Polygon or HyperEVM.",
+            "The chain is a supported deposit chain: Ethereum, Avalanche, OP Mainnet, Arbitrum, Base, Polygon or HyperEVM.",
             "For Arbitrum, the amount is added to the allowance at once if the factory is already trusted, or later by `applyAuthorisation`. For another chain it is only recorded here, for `dispatchAuthorisation`.",
             "The allowance only grows by authorisations and only shrinks by funding."
           ],
@@ -348,16 +360,17 @@
           "who": "The owner: signed by any credential in effect. No nonce: the message names the factory, the chain and the due time.",
           "when": "At the home only, before the trust takes effect and before the signature's deadline. Once in effect, a trust is permanent.",
           "params": {
-            "domain": "The chain of the pending trust, by its CCTP domain number (Ethereum 0, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19)."
+            "domain": "The chain of the pending trust, by its CCTP domain number (Ethereum 0, Avalanche 1, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19)."
           }
         },
         "withdraw": {
           "caller": "transfer-key",
           "does": "Pays an amount of a token (zero: the chain's native coin) to the withdrawal address, with no fee.",
           "who": "A wallet credential in effect, calling from its own address; the transfer key unless the owner revoked it on this chain; and **anyone** once the deposit factory's transfer key has not checked in for 7 days (the escape hatch).",
-          "when": "Once a withdrawal address is in effect on this chain (on a copy, once the record has brought it).",
+          "when": "Once a withdrawal address is in effect on this chain, and on a copy only while it is synced (its record sent by the home within the last 30 days). An unsynced copy refuses every caller, the escape hatch included (`NotSynced`), until the home's record arrives again.",
           "checks": [
             "The destination is always the withdrawal address in effect: the caller chooses only the token and the amount.",
+            "On a copy whose record is older than 30 days, it reverts for every caller: a withdrawal never goes to an address the home has since replaced for longer than that.",
             "The native coin can reach the address before the contract exists there, or be forced in; the contract refuses a plain transfer once it exists."
           ],
           "params": {
@@ -369,7 +382,7 @@
           "caller": "owner",
           "does": "The owner's signed withdrawal: the signed amount leaves, a fee of at most the signed maximum to the fee recipient and the rest to the withdrawal address.",
           "who": "The owner: a local action signed by a credential in effect, with that credential's own local nonce. Anyone may submit it and chooses the fee, up to the signed maximum.",
-          "when": "On any chain whose copy is synced, before the signature's deadline. Revoking the transfer key does not stop it.",
+          "when": "On any chain whose copy is synced (its record sent by the home within the last 30 days), before the signature's deadline. Revoking the transfer key does not stop it.",
           "checks": [
             "Every field is signed: token, amount, destination, maximum fee, fee recipient.",
             "The signed destination must still be the withdrawal address in effect, and the signed fee recipient the deposit factory's in effect: a signature played after either changed reverts.",
@@ -431,11 +444,12 @@
           "checks": [
             "The destination is a supported deposit chain other than this one, and the recipient is always this same address.",
             "The fee allowed is Circle's own minimum for the amount, read in the call, and a burn whose minimum is above 0.1% of the amount is refused.",
+            "Per UTC day, the fees of this chain's burns together stay within 0.1% of the highest USDC balance seen here at a burn that pays a fee that day; a burn beyond it reverts (`BurnFeeTooHigh`). A burn with no fee is not counted. A round trip never raises the balance above its earlier peak, so a stolen transfer key's round trips can pay Circle at most that much a day here, while a large deposit later in the day is never held back.",
             "The token approval is exact and reset to zero after the burn."
           ],
           "params": {
             "amount": "How much USDC to burn here and mint on the other chain, in its smallest unit (6 decimals).",
-            "destinationDomain": "The deposit chain to mint on, by its CCTP domain number (Ethereum 0, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19); not this chain."
+            "destinationDomain": "The deposit chain to mint on, by its CCTP domain number (Ethereum 0, Avalanche 1, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19); not this chain."
           }
         },
         "burnMinFee": {
@@ -659,7 +673,7 @@
         "ConversionUnavailable": "This chain has no USDC for the account to pay or burn, or no pinned pool to convert in.",
         "BadDomain": "The chain named is not a supported deposit chain, is this one, or does not fit the call (an authorisation for Arbitrum is applied, one for another chain dispatched).",
         "BadAmount": "The amount is zero or out of range: an authorisation above the maximum grant or missing its factory or configuration, a swap too large, or a pool asking for more than the swap's amount.",
-        "BurnFeeTooHigh": "Circle's minimum fee for the burn is above the contract's cap on it.",
+        "BurnFeeTooHigh": "Circle's minimum fee for the burn is above 0.1% of the amount, or would take the day's fees on this chain above 0.1% of the highest USDC balance seen at a fee-paying burn that day.",
         "BelowMinimum": "The swap would return less USDC than the minimum.",
         "TransferFailed": "A token or coin transfer failed, or the token has no code.",
         "Reentered": "A call re-entered the account while a payment was under way.",
@@ -667,7 +681,7 @@
         "NotHomeMessage": "The message does not come from this same account on Arbitrum.",
         "NotFinalized": "The message was not attested at finality.",
         "BadMessage": "The message is malformed: too short, of an unknown kind, or with an invalid record.",
-        "NotSynced": "This copy has not yet received the home's owner record, so it cannot check a signature or let money leave.",
+        "NotSynced": "This copy has not received the home's owner record, or the one it holds was sent more than 30 days ago (`RECORD_TTL`), so it cannot check a signature or let money leave until the home's record arrives again.",
         "NotWithdrawalAddress": "The signed withdrawal names an address that is not the withdrawal address in effect.",
         "NotFeeRecipient": "The signed withdrawal names a fee recipient that is not the factory's in effect."
       }

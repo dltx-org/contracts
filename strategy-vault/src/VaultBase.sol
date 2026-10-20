@@ -618,11 +618,11 @@ abstract contract VaultBase is VaultState {
             if (executionRevoked) _onRevoke();
             emit ExecutionRevoked(executionRevoked);
         } else {
-            _agentAction(action, agent);
+            _agentAction(action, agent, credential);
         }
     }
 
-    function _agentAction(uint8, address) internal virtual {
+    function _agentAction(uint8, address, bytes32) internal virtual {
         revert Unsupported();
     }
 

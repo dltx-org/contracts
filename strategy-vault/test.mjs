@@ -123,6 +123,21 @@ if (tested.length !== 8 || JSON.stringify(tested) !== JSON.stringify(deployed)) 
   console.error('strategy-vault: script/Deploy.s.sol and test/Pinned.t.sol pin different builds')
   process.exit(1)
 }
+// ...and the same three module runtime hashes, which the leg codes and the hub code name (the partner's
+// audit L1: never `type(...).runtimeCode`, which may differ by compile unit)
+const runtimesOf = (file) =>
+  [
+    ...readFileSync(resolve(here, file), 'utf8').matchAll(
+      /bytes32 constant (\w+_RUNTIME_HASH) = (0x[0-9a-fA-F]+);/g,
+    ),
+  ]
+    .map((m) => `${m[1]}=${m[2].toLowerCase()}`)
+    .sort()
+const testedRuntimes = runtimesOf('test/Pinned.t.sol')
+if (testedRuntimes.length !== 3 || JSON.stringify(testedRuntimes) !== JSON.stringify(runtimesOf('script/Deploy.s.sol'))) {
+  console.error('strategy-vault: script/Deploy.s.sol and test/Pinned.t.sol pin different module runtimes')
+  process.exit(1)
+}
 const [largest, most] = Object.entries(sizes).sort(
   ([, a], [, b]) => b.runtime_size - a.runtime_size,
 )[0]

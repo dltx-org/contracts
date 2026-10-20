@@ -153,6 +153,12 @@ contract DepositAccount {
     /// paid up to this, and a burn whose minimum is above it is refused (the USDC stays here).
     uint256 public constant BURN_FEE_CAP_BP = 10;
 
+    /// A copy trusts its record for this long after the home published it (the partner's audit M1): past
+    /// it the copy reads as unsynced (no owner signature, no withdrawal) until the home's record, even
+    /// unchanged, arrives again. It bounds how long a credential removed or an address replaced at the
+    /// home stays usable on a chain the change has not reached.
+    uint256 public constant RECORD_TTL = 30 days;
+
     /// Uniswap V3's price limits (TickMath), so an exact-input swap is limited by `minOut` alone.
     uint160 internal constant MIN_SQRT_RATIO = 4295128739;
     uint160 internal constant MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342;
@@ -218,6 +224,13 @@ contract DepositAccount {
     uint64 internal _deployedAt;
     /// When a pending withdrawal-address change takes effect (0: none).
     uint64 internal _pendingWithdrawalDue;
+    /// When the home published the record a copy holds (0 on the home and on an unsynced copy).
+    uint64 public recordPublishedAt;
+    /// The UTC day of this chain's burn-fee budget, its cap (10 bp of the highest USDC balance seen at a
+    /// fee-paying burn that day) and the fees paid (the partner's audit M3).
+    uint256 internal _burnDay;
+    uint256 internal _burnCap;
+    uint256 internal _burnPaid;
     address internal _withdrawal;
     address internal _pendingWithdrawal;
     /// The USDT a swap in flight may pay its pool (0 outside a conversion's swap).
@@ -383,10 +396,11 @@ contract DepositAccount {
         return block.chainid == HOME_CHAIN_ID;
     }
 
-    /// The home always; a copy once it has received the home's record. An unsynced copy accepts no
-    /// owner signature and no local action.
+    /// The home always; a copy while the home's record it received was published within RECORD_TTL. An
+    /// unsynced copy (never reached, or expired) accepts no owner signature, no local action and no
+    /// withdrawal, and names no withdrawal address.
     function synced() public view returns (bool) {
-        return _synced || isHome();
+        return isHome() || (_synced && block.timestamp <= uint256(recordPublishedAt) + RECORD_TTL);
     }
 
     /// The next record-change nonce of credential `c` (home only).
@@ -448,8 +462,9 @@ contract DepositAccount {
         }
     }
 
-    /// The withdrawal address in effect now (zero until the owner sets one).
+    /// The withdrawal address in effect now (zero until the owner sets one, and on an unsynced copy).
     function withdrawalAddress() public view returns (address) {
+        if (!synced()) return address(0);
         return _due(_pendingWithdrawalDue) ? _pendingWithdrawal : _withdrawal;
     }
 
@@ -485,6 +500,12 @@ contract DepositAccount {
 
     function isCredential(Credential calldata c) external view returns (bool) {
         return _isCredential(credentialId(c));
+    }
+
+    /// `isCredential` by the credential's id (`credentialId`): what a vault keeps of the credential that
+    /// signed an action it applies later (the Hyperliquid leg's agent choice, the partner's audit M2).
+    function isCredentialId(bytes32 id) external view returns (bool) {
+        return _isCredential(id);
     }
 
     function domainSeparator() public view returns (bytes32) {
@@ -614,9 +635,9 @@ contract DepositAccount {
     }
 
     /// Circle's V2 handler, at a copy: the home's own record, finalized. The first one is taken at any
-    /// version if the home published it at or after this copy's deployment; afterwards only a strictly
-    /// higher version. Anything else from the home is ignored (and the message consumed), never
-    /// reverted.
+    /// version if the home published it at or after this copy's deployment; afterwards a strictly higher
+    /// version, or the same version published later, which renews the copy (RECORD_TTL). Anything
+    /// else from the home is ignored (and the message consumed), never reverted.
     function handleReceiveFinalizedMessage(
         uint32 sourceDomain,
         bytes32 sender,
@@ -634,8 +655,8 @@ contract DepositAccount {
             abi.decode(messageBody, (bytes32, uint64, uint64, address, Credential[]));
         if (tag != RECORD_TAG) revert BadMessage();
         if (_synced) {
-            // afterwards, only a strictly higher version
-            if (v <= _version) {
+            // afterwards, a strictly higher version, or the same one published later (a renewal)
+            if (v < _version || publishedAt <= recordPublishedAt) {
                 emit RecordIgnored(v, _version);
                 return true;
             }
@@ -654,6 +675,7 @@ contract DepositAccount {
         }
         _withdrawal = w;
         _version = v;
+        recordPublishedAt = publishedAt;
         _synced = true;
         emit RecordApplied(v);
         return true;
@@ -799,6 +821,7 @@ contract DepositAccount {
     /// wallet credential itself, by the transfer key unless revoked, and by ANYONE once the transfer
     /// key has not checked in for 7 days (the escape hatch, decision 17).
     function withdraw(address token, uint256 amount) external nonReentrant {
+        if (!synced()) revert NotSynced(); // never to a replaced address (M1)
         _settle();
         IDepositFactory f = IDepositFactory(factory);
         bool allowed = _isCredential(_walletId(msg.sender)) || (msg.sender == f.transferKey() && !transferRevoked)
@@ -905,8 +928,11 @@ contract DepositAccount {
 
     /// Transfer key only: burns `amount` of this chain's USDC by CCTP V2 (standard transfer), minted to
     /// THIS same address on another deposit chain; anyone may relay the mint. Its `maxFee` is the
-    /// messenger's minimum fee for the amount, read now (0 where the messenger has none), and never
-    /// above BURN_FEE_CAP_BP of the amount.
+    /// messenger's minimum fee for the amount, read now (0 where the messenger has none), never above
+    /// BURN_FEE_CAP_BP of the amount, and the day's fees together never above BURN_FEE_CAP_BP of the
+    /// highest USDC balance seen here at a fee-paying burn that day (the partner's audit M3): a round
+    /// trip never raises the balance above its earlier peak, so a stolen transfer key's round trips pay
+    /// Circle at most that a day here, while a large deposit later in the day is never held back.
     function convertBurn(uint256 amount, uint32 destinationDomain) external nonReentrant {
         _transferKeyOnly();
         (address usdc, uint32 local) = cctpUsdc();
@@ -915,6 +941,14 @@ contract DepositAccount {
         if (amount == 0) revert BadAmount();
         uint256 maxFee = burnMinFee(amount);
         if (maxFee * 10_000 > amount * BURN_FEE_CAP_BP) revert BurnFeeTooHigh();
+        if (maxFee != 0) {
+            uint256 day = block.timestamp / 1 days;
+            if (day != _burnDay) (_burnDay, _burnCap, _burnPaid) = (day, 0, 0);
+            uint256 cap = _balanceOf(usdc) * BURN_FEE_CAP_BP / 10_000;
+            if (cap > _burnCap) _burnCap = cap;
+            if (_burnPaid + maxFee > _burnCap) revert BurnFeeTooHigh();
+            _burnPaid += maxFee;
+        }
         _approve(usdc, TOKEN_MESSENGER, amount);
         ITokenMessengerV2(TOKEN_MESSENGER).depositForBurn(
             amount, destinationDomain, bytes32(uint256(uint160(address(this)))), usdc, bytes32(0), maxFee, FINALIZED
@@ -962,6 +996,7 @@ contract DepositAccount {
     function cctpUsdc() public view returns (address usdc, uint32 domain) {
         uint256 id = block.chainid;
         if (id == 1) return (0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48, 0);
+        if (id == 43114) return (0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E, 1);
         if (id == 10) return (0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85, 2);
         if (id == 42161) return (0xaf88d065e77c8cC2239327C5EDb3A432268e5831, 3);
         if (id == 8453) return (0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913, 6);
@@ -972,10 +1007,10 @@ contract DepositAccount {
     // ── internals ────────────────────────────────────────────────────────────────────────────
 
     /// The deposit chains a burn may mint on and an authorisation may name, where this address is the
-    /// same user's account: Ethereum 0, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19.
-    /// Never a non-EVM domain, where the address would mean nothing.
+    /// same user's account: Ethereum 0, Avalanche 1, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7,
+    /// HyperEVM 19. Never a non-EVM domain, where the address would mean nothing.
     function _depositDomain(uint32 d) internal pure returns (bool) {
-        return d == 0 || d == 2 || d == 3 || d == 6 || d == 7 || d == 19;
+        return d <= 3 || d == 6 || d == 7 || d == 19;
     }
 
     /// The most a signed withdrawal of `token` may pay as its fee (decision 73): `MAX_SIGNED_FEE` for

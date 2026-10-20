@@ -67,7 +67,7 @@ abstract contract ShortVaultState is VaultState {
     // exitStatus().flags
     uint256 internal constant F_PARTNER_PENDING = 1;
     uint256 internal constant F_NEEDS_HYPE = 2; // no HYPE, under 11 USDC: someone must `topUpHype`
-    uint256 internal constant F_BUDGET = 4; // a dropped-out DEX reads notional: transfers within `budget`
+    uint256 internal constant F_BUDGET = 4; // a dropped-out DEX reads notional: spot keeps `floor`
     uint256 internal constant F_WAITING_OWNER = 8; // a HIP-3 position: only the owner's signed close
     uint256 internal constant F_MARGIN_HELD = 16; // flat, yet margin not withdrawable: unnamed resting orders?
     /// HyperEVM's copy of the owner's record has not received the home's record yet: no owner
@@ -90,14 +90,19 @@ abstract contract ShortVaultState is VaultState {
     bool public agentEverSet;
     address public ownerAgent; // the owner's choice other than the burner: effective after 24 hours
     uint64 public ownerAgentAt;
+    /// The credential that proposed `ownerAgent`: it must still stand when the agent is applied (the
+    /// partner's audit M2)
+    bytes32 internal ownerAgentBy;
 
     // ── the exit ─────────────────────────────────────────────────────────────────────────────────────
     address public exitAgent;
     uint8 public purchases;
-    bool public budgetSet;
-    uint64 public marginTriedAt; // the exit's first DEX 0 margin → spot try (block), for the budget's fallback
-    uint64 public budget; // B, USDC Core wei: fixed once, never refilled
-    uint64 public spent; // sent or spent from spot since B was fixed
+    bool public floorSet;
+    uint64 public marginTriedAt; // the exit's first DEX 0 margin → spot try (block), for the floor's fallback
+    uint64 public reserved; // budget mode: sent from spot to HyperEVM, not yet seen arriving (Core wei)
+    uint256 public floor; // budget mode: the spot USDC kept (R + the fee allowance), Core wei, fixed once
+    uint256 internal arrivedMark; // HyperEVM USDC in (`sentTo[0]` + balance, 6 dp) when `reserved` began
+    uint256 internal mintedMark; // and Circle's mints counted here then, net of its fee
     uint64 internal toEvmRead; // the spot USDC read when the last spot → HyperEVM send went
     uint32[] internal _dexes; // the watched HIP-3 DEXes (DEX 0 always watched)
     mapping(uint32 => uint64) public dexSince;
@@ -205,5 +210,18 @@ abstract contract ShortVaultState is VaultState {
         if (last != 0 && block.number < last + PACING_BLOCKS) return false;
         lastSent[k] = block.number;
         return true;
+    }
+
+    /// The agent named now; in exit, the exit's own (the burner, or the owner's choice).
+    function _useAgent(address next) internal {
+        if (exiting) exitAgent = next;
+        _setAgent(next);
+    }
+
+    function _setAgent(address next) internal {
+        HyperCore.addApiWallet(next, AGENT_NAME);
+        agent = next;
+        agentEverSet = true;
+        emit AgentSet(next);
     }
 }

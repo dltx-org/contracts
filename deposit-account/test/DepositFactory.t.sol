@@ -15,7 +15,7 @@ contract DepositFactoryTest is Helpers {
     /// or a later chain's factory lands elsewhere and a user's money sent there is out of reach.
     /// Update it only before the first deployment, deliberately
     /// (`forge inspect DepositFactory bytecode | cast keccak`), and in script/Deploy.s.sol with it.
-    bytes32 constant PINNED_CREATION_CODE_HASH = 0x5abc274f66b2dcae92b61e7fdb0aa38b8f6b72b36e1f0f7c0845d3ca2495b955;
+    bytes32 constant PINNED_CREATION_CODE_HASH = 0x92b682f658bc0b9f7f0493763215844e9adb48a369ca41a20d3b690fcc955db6;
 
     DepositFactory f;
 
@@ -39,10 +39,10 @@ contract DepositFactoryTest is Helpers {
         assertEq(f.saltOf(ALICE, owners), keccak256(abi.encode(ALICE, owners)), "salt");
         assertEq(f.addressOf(ALICE, owners), predictedClone(address(f), f.implementation(), f.saltOf(ALICE, owners)));
         // the literal vectors, for the TypeScript side to assert the same (the build pinned above)
-        assertEq(address(f), 0xB1CbE63177b9E1bc8cBA08578F52A987012701ca, "factory vector");
-        assertEq(f.implementation(), 0xA734a0d959355DdF52D2dd39abd9c90c5d9A19cF, "implementation vector");
+        assertEq(address(f), 0x0CB2eE738Bf1502Eba5fF79610C86f6B78593a3c, "factory vector");
+        assertEq(f.implementation(), 0x0AcDc23Cd650D5e92f76f066Bc1D92190FD66bF2, "implementation vector");
         assertEq(f.saltOf(ALICE, owners), 0xb11d2599ac7f6f79b1b23ec7b287342dc21e2257c2a12bb00798b95d1a7c305e, "salt vector");
-        assertEq(f.addressOf(ALICE, owners), 0x26DbA0a33674Df899B73A73481dBfef9D393069a, "account vector");
+        assertEq(f.addressOf(ALICE, owners), 0x860E3bA224a34dd5f4D195545987f86F61639fB7, "account vector");
     }
 
     function predictedFactory(address recovery) internal pure returns (address) {

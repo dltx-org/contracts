@@ -3,13 +3,6 @@ pragma solidity 0.8.37;
 
 import {Script, console} from "forge-std/Script.sol";
 import {CombinationFactory} from "../src/CombinationFactory.sol";
-import {LongVault} from "../src/LongVault.sol";
-import {LongVaultExit} from "../src/LongVaultExit.sol";
-import {ShortVault} from "../src/ShortVault.sol";
-import {ShortVaultExit} from "../src/ShortVaultExit.sol";
-import {StrategyHub} from "../src/StrategyHub.sol";
-import {StrategyHubFee} from "../src/StrategyHubFee.sol";
-import {VaultRegistry} from "../src/VaultRegistry.sol";
 import {Legs, ParamsTypes} from "../src/lib/VaultTypes.sol";
 import {FeePins} from "../src/lib/FeePins.sol";
 
@@ -63,21 +56,29 @@ contract Deploy is Script {
     bytes32 constant REGISTRY_CODE = 0xd9d8d635144040392821ad5807a45484403fe7fa12a70bb9556e9c6aecc0a200;
     bytes32 constant LONG_EXIT_CODE = 0xa5554ffbcbfe26275afa41f148189ca2a347cccb48c9b50bacdd1d08aea5f688;
     bytes32 constant LONG_LEG_CODE = 0xf9c31cb3659be0714a61bd486c86e39978f0c22824620fb3973e821cd4eaba6a;
-    bytes32 constant SHORT_EXIT_CODE = 0x96546cbafe94aff55bbbe39837d25e7b0fafe63a0a96fe7bd3541a05002dc91c;
-    bytes32 constant SHORT_LEG_CODE = 0xc5daf55cc017f960321ad9450e73c9474cb69aee6857ee6ef0e1fb6bb4cae46b;
-    bytes32 constant HUB_FEE_CODE = 0x8046886f60273b10ef6973bca5dd4b671ce86112f512c92acd0daab0057eb60c;
-    bytes32 constant HUB_CODE = 0x0f0b5ec17b617a5dd0e75cc45ebecf401241bc4ea9b02088e5a9e831786a4f7a;
-    bytes32 constant COMBINATION_CODE = 0x24a4f84b2ca4cdcd0d6a4194c71b454ef9ebca6d621bc792045eda551307b184;
+    bytes32 constant SHORT_EXIT_CODE = 0xb963a515c9467004bd9f58a163e8236a090dd6e5e477758f4d8a1c14892e68f5;
+    bytes32 constant SHORT_LEG_CODE = 0xed2cbb37949a5c1c2aa393247d96ae8722c90d3ba1ce5e61f86a7baae1a3c68d;
+    bytes32 constant HUB_FEE_CODE = 0xead386251b7465f201678da4f35c44f0fef48c29950b5ec3d01a495d1b8e9fa0;
+    bytes32 constant HUB_CODE = 0xa994298b09c27e43fe2bc8043aed521d933d851dfa4923047b4af574aafa260c;
+    bytes32 constant COMBINATION_CODE = 0xb321a35ade28a925ea2a7167415260edb76aef1e4a0457a700ccdfb580ed692d;
+    // The modules' runtime code hashes, what a leg code (and the hub code) pins: test/Pinned.t.sol's, from
+    // the deployed module. Not `type(...).runtimeCode`, which solc 0.8.37 (via-IR) may emit differently in
+    // another compile unit than the runtime the creation code deploys (the combined review's re-pin; the
+    // partner's audit L1): a leg code naming the wrong hash reverts, and a combination predicting it on a
+    // chain without the module would pin the wrong leg address.
+    bytes32 constant LONG_EXIT_RUNTIME_HASH = 0x8becfdd9c8ca1285013e279985e557e88e7ff9fe58fe50ace32d24332675fe70;
+    bytes32 constant SHORT_EXIT_RUNTIME_HASH = 0x2eb092b6c751c42fd55a1f6cb48b4c27f6c83448e57ea7cfd3ded58d7cdf67ca;
+    bytes32 constant HUB_FEE_RUNTIME_HASH = 0xe8aea602bd0c995180388a99447b0f2f39ae93fb9b36c4567861cb793c82c54a;
 
     function run() external returns (address made) {
-        require(keccak256(type(VaultRegistry).creationCode) == REGISTRY_CODE, "not the pinned VaultRegistry");
-        require(keccak256(type(LongVaultExit).creationCode) == LONG_EXIT_CODE, "not the pinned LongVaultExit");
-        require(keccak256(type(LongVault).creationCode) == LONG_LEG_CODE, "not the pinned LongVault");
-        require(keccak256(type(ShortVaultExit).creationCode) == SHORT_EXIT_CODE, "not the pinned ShortVaultExit");
-        require(keccak256(type(ShortVault).creationCode) == SHORT_LEG_CODE, "not the pinned ShortVault");
-        require(keccak256(type(CombinationFactory).creationCode) == COMBINATION_CODE, "not the pinned CombinationFactory");
-        require(keccak256(type(StrategyHub).creationCode) == HUB_CODE, "not the pinned StrategyHub");
-        require(keccak256(type(StrategyHubFee).creationCode) == HUB_FEE_CODE, "not the pinned StrategyHubFee");
+        require(keccak256(_code("VaultRegistry")) == REGISTRY_CODE, "not the pinned VaultRegistry");
+        require(keccak256(_code("LongVaultExit")) == LONG_EXIT_CODE, "not the pinned LongVaultExit");
+        require(keccak256(_code("LongVault")) == LONG_LEG_CODE, "not the pinned LongVault");
+        require(keccak256(_code("ShortVaultExit")) == SHORT_EXIT_CODE, "not the pinned ShortVaultExit");
+        require(keccak256(_code("ShortVault")) == SHORT_LEG_CODE, "not the pinned ShortVault");
+        require(keccak256(_code("CombinationFactory")) == COMBINATION_CODE, "not the pinned CombinationFactory");
+        require(keccak256(_code("StrategyHub")) == HUB_CODE, "not the pinned StrategyHub");
+        require(keccak256(_code("StrategyHubFee")) == HUB_FEE_CODE, "not the pinned StrategyHubFee");
         require(DEPLOYER.codehash == DEPLOYER_CODEHASH, "no canonical deterministic deployer on this chain");
 
         string memory what = vm.envString("CONTRACT");
@@ -85,17 +86,17 @@ contract Deploy is Script {
         (bytes32 salt, bytes memory init) = h == keccak256("registry")
             ? (REGISTRY_SALT, _registryInit())
             : h == keccak256("long-exit")
-                ? (LONG_EXIT_SALT, type(LongVaultExit).creationCode)
+                ? (LONG_EXIT_SALT, _code("LongVaultExit"))
                 : h == keccak256("long")
-                    ? (LONG_LEG_SALT, _legInit(type(LongVault).creationCode, LONG_EXIT_SALT, type(LongVaultExit).creationCode, type(LongVaultExit).runtimeCode))
+                    ? (LONG_LEG_SALT, _legInit(_code("LongVault"), LONG_EXIT_SALT, _code("LongVaultExit"), LONG_EXIT_RUNTIME_HASH))
                     : h == keccak256("short-exit")
-                        ? (SHORT_EXIT_SALT, type(ShortVaultExit).creationCode)
+                        ? (SHORT_EXIT_SALT, _code("ShortVaultExit"))
                         : h == keccak256("short")
-                            ? (SHORT_LEG_SALT, _legInit(type(ShortVault).creationCode, SHORT_EXIT_SALT, type(ShortVaultExit).creationCode, type(ShortVaultExit).runtimeCode))
+                            ? (SHORT_LEG_SALT, _legInit(_code("ShortVault"), SHORT_EXIT_SALT, _code("ShortVaultExit"), SHORT_EXIT_RUNTIME_HASH))
                             : h == keccak256("combination")
                                 ? (COMBINATION_SALT, _combinationInit())
                                 : h == keccak256("hub-fee")
-                                    ? (HUB_FEE_SALT, type(StrategyHubFee).creationCode)
+                                    ? (HUB_FEE_SALT, _code("StrategyHubFee"))
                                     : h == keccak256("hub") ? (HUB_SALT, _hubInit()) : (bytes32(0), bytes(""));
         require(init.length > 0, "CONTRACT: registry | hub-fee | hub | long-exit | long | short-exit | short | combination");
 
@@ -107,14 +108,27 @@ contract Deploy is Script {
             require(predicted == expected, "this build and these inputs would not land at EXPECTED");
         }
         require(predicted.code.length == 0, "already deployed here");
+        // a module deployed here must be the pinned runtime its leg names
+        bytes32 runtime = h == keccak256("long-exit")
+            ? LONG_EXIT_RUNTIME_HASH
+            : h == keccak256("short-exit") ? SHORT_EXIT_RUNTIME_HASH : h == keccak256("hub-fee") ? HUB_FEE_RUNTIME_HASH : bytes32(0);
         vm.startBroadcast();
         (bool ok, bytes memory ret) = DEPLOYER.call(abi.encodePacked(salt, init));
         vm.stopBroadcast();
         require(ok && ret.length == 20 && address(bytes20(ret)) == predicted, "deployment failed");
+        require(runtime == bytes32(0) || predicted.codehash == runtime, "the module's runtime is not the pinned one");
         made = predicted;
         console.log(what, made, "chain", block.chainid);
         console.log("runtime code hash (the combination's pin, for a leg code):");
         console.logBytes32(made.codehash);
+    }
+
+    /// A contract's creation code from its own build artifact (`forge inspect <C> bytecode`, what the pins and
+    /// the seam's fixtures are), never `type(C).creationCode`: solc 0.8.37 (via-IR) compiles a contract named
+    /// by `type(...)` inside this script's unit, and it emitted ShortVaultExit differently there (the
+    /// partner's audit L1, measured 2026-10-20: the script refused its own pinned build).
+    function _code(string memory name) internal view returns (bytes memory) {
+        return vm.getCode(string.concat(name, ".sol:", name));
     }
 
     function _predict(bytes32 salt, bytes memory init) internal pure returns (address) {
@@ -122,37 +136,37 @@ contract Deploy is Script {
     }
 
     function _registryInit() internal view returns (bytes memory) {
-        return abi.encodePacked(type(VaultRegistry).creationCode, abi.encode(vm.envAddress("RECOVERY")));
+        return abi.encodePacked(_code("VaultRegistry"), abi.encode(vm.envAddress("RECOVERY")));
     }
 
-    /// A leg code names its module: the module's address (computed) and code hash (its runtime code's:
-    /// a module carries no immutable).
-    function _legInit(bytes memory legCreation, bytes32 exitSalt, bytes memory exitCreation, bytes memory exitRuntime)
+    /// A leg code names its module: the module's address (computed) and code hash (its pinned runtime's: a
+    /// module carries no immutable).
+    function _legInit(bytes memory legCreation, bytes32 exitSalt, bytes memory exitCreation, bytes32 exitRuntimeHash)
         internal
         pure
         returns (bytes memory)
     {
-        return abi.encodePacked(legCreation, abi.encode(_predict(exitSalt, exitCreation), keccak256(exitRuntime)));
+        return abi.encodePacked(legCreation, abi.encode(_predict(exitSalt, exitCreation), exitRuntimeHash));
     }
 
     /// The hub code names its fee module the same way (amendment 2b).
-    function _hubInit() internal pure returns (bytes memory) {
-        return _legInit(type(StrategyHub).creationCode, HUB_FEE_SALT, type(StrategyHubFee).creationCode, type(StrategyHubFee).runtimeCode);
+    function _hubInit() internal view returns (bytes memory) {
+        return _legInit(_code("StrategyHub"), HUB_FEE_SALT, _code("StrategyHubFee"), HUB_FEE_RUNTIME_HASH);
     }
 
     /// Today's combination: the hub and the AAVE leg on Arbitrum, the Hyperliquid leg on HyperEVM.
     function _combinationInit() internal returns (bytes memory) {
         address registry = _predict(REGISTRY_SALT, _registryInit());
         address hub = _predict(HUB_SALT, _hubInit());
-        address longExit = _predict(LONG_EXIT_SALT, type(LongVaultExit).creationCode);
-        address shortExit = _predict(SHORT_EXIT_SALT, type(ShortVaultExit).creationCode);
+        address longExit = _predict(LONG_EXIT_SALT, _code("LongVaultExit"));
+        address shortExit = _predict(SHORT_EXIT_SALT, _code("ShortVaultExit"));
         address longCode = _predict(
             LONG_LEG_SALT,
-            abi.encodePacked(type(LongVault).creationCode, abi.encode(longExit, keccak256(type(LongVaultExit).runtimeCode)))
+            abi.encodePacked(_code("LongVault"), abi.encode(longExit, LONG_EXIT_RUNTIME_HASH))
         );
         address shortCode = _predict(
             SHORT_LEG_SALT,
-            abi.encodePacked(type(ShortVault).creationCode, abi.encode(shortExit, keccak256(type(ShortVaultExit).runtimeCode)))
+            abi.encodePacked(_code("ShortVault"), abi.encode(shortExit, SHORT_EXIT_RUNTIME_HASH))
         );
         bytes32 hubHash = vm.envBytes32("HUB_CODE_HASH");
         bytes32 longHash = vm.envBytes32("LONG_CODE_HASH");
@@ -169,7 +183,7 @@ contract Deploy is Script {
         pins[0] = CombinationFactory.LegPin(longCode, longHash, ARBITRUM, Legs.LONG, Legs.VALUE_READ, ParamsTypes.AAVE_V3_NAME, ParamsTypes.AAVE_V3_FIELDS, ParamsTypes.AAVE_V3_COUNT);
         pins[1] = CombinationFactory.LegPin(shortCode, shortHash, HYPEREVM, Legs.SHORT, Legs.VALUE_READ, ParamsTypes.HYPERCORE_NAME, ParamsTypes.HYPERCORE_FIELDS, ParamsTypes.HYPERCORE_COUNT);
         return abi.encodePacked(
-            type(CombinationFactory).creationCode,
+            _code("CombinationFactory"),
             abi.encode(registry, hub, hubHash, ParamsTypes.HUB_NAME, ParamsTypes.HUB_FIELDS, ParamsTypes.HUB_COUNT, hubDomains, pins, FeePins.prices(), FeePins.sequencers())
         );
     }

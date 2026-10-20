@@ -445,14 +445,15 @@ contract CombinationFactory is IVaultFunding {
         return a.length < b.length;
     }
 
-    /// The deposit contract's chains (`DepositAccount._depositDomain`): Ethereum 0, OP Mainnet 2,
-    /// Arbitrum 3, Base 6, Polygon 7, HyperEVM 19.
+    /// The deposit contract's chains (`DepositAccount._depositDomain`): Ethereum 0, Avalanche 1,
+    /// OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19.
     function _depositDomain(uint32 d) internal pure returns (bool) {
-        return d == 0 || d == 2 || d == 3 || d == 6 || d == 7 || d == 19;
+        return d <= 3 || d == 6 || d == 7 || d == 19;
     }
 
     /// The deposit chains whose sequencer Chainlink watches (an uptime feed): OP Mainnet 2, Arbitrum 3,
-    /// Base 6. Ethereum (0) has none to watch; Polygon PoS (7) and HyperEVM (19) have no such feed.
+    /// Base 6. Ethereum (0) and Avalanche's C-Chain (1) have none to watch; Polygon PoS (7) and HyperEVM
+    /// (19) have no such feed.
     function _rollup(uint32 d) internal pure returns (bool) {
         return d == 2 || d == 3 || d == 6;
     }
