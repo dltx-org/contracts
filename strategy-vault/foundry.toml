@@ -1,0 +1,42 @@
+# The strategy vault and its factory.
+# One factory at the same address on every EVM chain (the deterministic deployer); one EIP-1167 clone per
+# strategy half from it (the AAVE long half on Arbitrum, the HyperCore short half on HyperEVM). The build
+# must be byte-identical everywhere, so the metadata hash is off: the factory's address is the hash of its
+# creation code, pinned in test/Pinned.t.sol and script/Deploy.s.sol.
+[profile.default]
+src = "src"
+out = "out"
+libs = ["dependencies"]
+test = "test"
+script = "script"
+solc = "0.8.37"
+# paris: no PUSH0 (shanghai), no MCOPY or transient storage (cancun). Nothing here needs more.
+evm_version = "paris"
+optimizer = true
+optimizer_runs = 200
+# via-IR: about 1 KB smaller for the short half, which sits near the 24,576-byte limit
+via_ir = true
+bytecode_hash = "none"
+cbor_metadata = false
+fs_permissions = []
+remappings = [
+  "forge-std/=dependencies/forge-std-1.9.4/src/",
+  "@openzeppelin/contracts/=dependencies/@openzeppelin-contracts-5.6.1/",
+]
+
+[rpc_endpoints]
+arbitrum = "${ARBITRUM_RPC_URL}"
+hyperevm = "${HYPEREVM_RPC_URL}"
+
+[dependencies]
+forge-std = "1.9.4"
+"@openzeppelin-contracts" = "5.6.1"
+
+[soldeer]
+# The remappings are pinned above; soldeer must not rewrite them under versioned names.
+remappings_generate = false
+remappings_regenerate = false
+
+[lint]
+# The build gate is the compiler and the tests; forge-lint advisories are not part of the on-chain tier.
+lint_on_build = false

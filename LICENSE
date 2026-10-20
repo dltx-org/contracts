@@ -1,0 +1,57 @@
+DLTX Source License 1.0
+
+Parameters
+
+Licensor:         DLTX
+Licensed Work:    The DLTX smart contracts in this directory: the deposit account and its factory
+                  (deposit-account/) and the strategy vaults, their hub, combination factory and
+                  registry (strategy-vault/), with their scripts and tests.
+                  The Licensed Work is (c) 2026 DLTX.
+Use grant:        None beyond the Grant below.
+Change Date:      The earlier of (a) the fifth anniversary of the first deployment of the Licensed
+                  Work on a production network, and (b) an earlier date the Licensor publishes for
+                  this purpose in this repository.
+Change License:   MIT License
+
+Terms
+
+1. Grant. The Licensor grants you a worldwide, non-exclusive, non-transferable, non-sublicensable,
+   revocable licence to read, study and audit the Licensed Work; to compile it and compare the
+   result with the contracts the Licensor has deployed; and to copy, modify and run it, including
+   any work derived from it, solely in a Test Environment.
+
+2. Production use is prohibited. You may not use the Licensed Work, or any work derived from it,
+   in a Production Environment. You may not deploy it, or any work derived from it, to any public
+   blockchain network where it can hold, move or control assets of value, nor offer a product or
+   service built on it. Any such use requires a separate written commercial licence from the
+   Licensor.
+
+3. Definitions. A "Test Environment" is a local, development or test network, or a fork of a
+   public network, on which no asset of real value is at risk. A "Production Environment" is any
+   other environment, including any public blockchain main network or layer.
+
+4. Affiliation. You may not state or imply that the Licensor sponsors, endorses or is affiliated
+   with you or with any work derived from the Licensed Work, and this licence grants no right to
+   the Licensor's names, logos or trademarks beyond accurate attribution.
+
+5. Change Date. On the Change Date, the Licensed Work as it stood at the first deployment named in
+   the Parameters becomes available under the Change License, and these Terms no longer apply to
+   it. Later versions of the Licensed Work carry their own Change Date.
+
+6. Third-party components. Parts of the Licensed Work import or follow third-party code, such as
+   OpenZeppelin Contracts (MIT License) and the EIP-1167 minimal proxy pattern. That code remains
+   under its own licence; this licence covers only the Licensor's own work.
+
+7. Termination. Any use outside this licence terminates it automatically for you, with immediate
+   effect, for every version of the Licensed Work.
+
+8. Severability. If a provision of this licence is held unenforceable, it is limited to the
+   minimum extent necessary and the rest of the licence stays in force.
+
+9. No warranty. THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+   NON-INFRINGEMENT. IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY ARISING FROM THE LICENSED WORK OR ITS USE.
+
+repay-with-collateral/ is not part of the Licensed Work: it is deployed on Arbitrum, verified under
+the MIT License, and stays under it.

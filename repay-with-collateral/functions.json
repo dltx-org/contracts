@@ -1,0 +1,102 @@
+{
+  "types": {
+    "Permit": "An EIP-2612 permit on the collateral's aToken, signed by the caller for this contract: `value` the amount allowed, `deadline` its expiry, and `v`, `r`, `s` the signature."
+  },
+  "contracts": [
+    {
+      "name": "RepayWithCollateral",
+      "source": "src/RepayWithCollateral.sol",
+      "title": "The repay-with-collateral contract",
+      "brief": "Repays an Aave V3 position's debt out of its own collateral, in one transaction.",
+      "summary": "Repays an Aave V3 position's variable debt out of its own collateral in one transaction: a flash loan of the debt asset, the repay, the collateral pulled and withdrawn, exactly the loan and its premium bought back on Uniswap V3, what the swap did not spend supplied back, and the loan returned. Either all of it happens or none of it does. It acts only on the position of the address that calls it, keeps no balance between transactions and has no owner; one deployment serves one Aave pool and one swap router. The long contract of a strategy calls it to repay with collateral.",
+      "functions": {
+        "POOL": {
+          "does": "The Aave V3 (or SparkLend) pool it flash-loans from, repays, withdraws from and supplies to."
+        },
+        "ROUTER": {
+          "does": "The Uniswap V3 SwapRouter02 it buys the loan back through."
+        },
+        "VARIABLE_RATE_MODE": {
+          "does": "Aave's variable interest-rate mode, the only debt it repays."
+        },
+        "REPAY_ALL": {
+          "does": "The `debtRepayAmount` that means: repay the caller's whole variable debt as read in the transaction, at most the flash loan."
+        },
+        "repayWithCollateral": {
+          "caller": "position",
+          "does": "Repays the caller's variable debt in `debtAsset` with the caller's own `collateralAsset` collateral, atomically, and returns what it repaid and how much collateral the swap spent.",
+          "who": "Any address, for its own Aave position only: the debt repaid, the aTokens pulled and the collateral supplied back are all the caller's.",
+          "when": "Whenever the pool lends: a paused reserve, or one whose flash loans are disabled, makes the call revert.",
+          "checks": [
+            "Not re-entered, and `flashAmount` and `debtRepayAmount` above zero.",
+            "The repay is at most the flash loan; with `REPAY_ALL`, the live variable debt, which must be above zero.",
+            "Pulls exactly `maxCollateralIn` of the caller's aTokens, after trying the caller's permit when its allowance is short (a failed permit is tolerated, the pull is the check). The pool's own health check on that pull must pass after the repay.",
+            "Buys back exactly the loan plus its premium, less the part of the loan the repay did not use, with an exact-output swap whose input is bounded by the collateral pulled: the whole transaction reverts if the pool cannot fill within it. The contract checks no price of its own; the caller bounds it with `maxCollateralIn`.",
+            "Supplies the collateral the swap did not spend back to the caller's position, or transfers it to the caller when the pool refuses the supply; any debt asset left over, and any balance sent to the contract directly, goes to the caller."
+          ],
+          "params": {
+            "collateralAsset": "The collateral to sell: the asset whose aToken the caller holds.",
+            "debtAsset": "The asset of the variable debt to repay.",
+            "flashAmount": "How much of `debtAsset` to flash-loan; for a full repayment, the current debt plus a margin.",
+            "debtRepayAmount": "How much debt to repay, or `REPAY_ALL` for the whole debt read in the transaction (at most `flashAmount`).",
+            "maxCollateralIn": "The most collateral (aTokens) the contract may pull, which is also the most the swap may spend.",
+            "poolFee": "The fee tier of the Uniswap V3 pool between the collateral and the debt asset (500 is 0.05%).",
+            "permit": "An EIP-2612 permit on the aToken for `maxCollateralIn` to this contract (see `Permit`); it may fail harmlessly when an allowance already covers the pull."
+          },
+          "returns": {
+            "debtRepaid": "The debt repaid, in `debtAsset`.",
+            "collateralSpent": "The collateral withdrawn and sold, in `collateralAsset`."
+          }
+        },
+        "executeOperation": {
+          "caller": "callback",
+          "does": "The flash-loan callback, inside `repayWithCollateral`: repays, pulls and withdraws the collateral, buys the loan back, settles what is left and lets the pool take its loan back.",
+          "who": "The pool only, for a flash loan this contract itself started.",
+          "checks": [
+            "The sender is `POOL` and the loan's initiator is this contract.",
+            "The position acted on is the address that called `repayWithCollateral`, carried from that call: never anything a third party supplies."
+          ],
+          "params": {
+            "asset": "The asset flash-loaned: the debt asset.",
+            "amount": "The amount flash-loaned.",
+            "premium": "The flash loan's fee, owed back with the amount.",
+            "initiator": "Who started the flash loan: only this contract is accepted.",
+            "params": "The data the contract passed when starting the loan."
+          }
+        }
+      },
+      "events": {
+        "RepaidWithCollateral": {
+          "does": "A position's debt was repaid out of its collateral, with every amount the operation moved.",
+          "params": {
+            "user": "The position's wallet.",
+            "collateralAsset": "The collateral sold.",
+            "debtAsset": "The debt repaid.",
+            "flashAmount": "The amount flash-loaned.",
+            "premium": "The flash loan's fee.",
+            "debtRepaid": "The debt repaid.",
+            "collateralPulled": "The aTokens pulled from the position.",
+            "collateralSpent": "The collateral the swap spent.",
+            "collateralResupplied": "The unspent collateral supplied back to the position.",
+            "collateralReturned": "The unspent collateral sent to the wallet instead, when the pool refused to take it back."
+          }
+        },
+        "StrayReturned": {
+          "does": "A balance the operation did not create (something sent to the contract directly) was handed to the caller, so it never builds up.",
+          "params": {
+            "token": "The token returned.",
+            "to": "The caller it went to.",
+            "amount": "The amount returned."
+          }
+        }
+      },
+      "errors": {
+        "Reentrancy": "A call re-entered the contract during an operation.",
+        "NotPool": "The flash-loan callback was called by someone other than the Aave pool.",
+        "NotInitiator": "The flash loan was not started by this contract.",
+        "RepayExceedsFlash": "The debt to repay is larger than the flash loan.",
+        "NothingToRepay": "The flash amount or the repay amount is zero, or the position has no debt."
+      }
+    }
+  ]
+}

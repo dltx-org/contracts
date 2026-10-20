@@ -1,0 +1,11 @@
+{
+  "name": "@contracts/strategy-vault",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The strategy vault (an AAVE long half on Arbitrum, a HyperCore short half on HyperEVM) and its factory (Foundry). Unit tests always run; fork tests run with the RPC urls and skip otherwise.",
+  "scripts": {
+    "build": "forge build",
+    "test": "node test.mjs"
+  }
+}

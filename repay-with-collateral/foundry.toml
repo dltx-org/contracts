@@ -1,0 +1,28 @@
+# The repay-with-collateral receiver.
+# One immutable, ownerless contract per (pool, router); deployed on Arbitrum (AAVE V3) and Ethereum (SparkLend).
+[profile.default]
+src = "src"
+out = "out"
+libs = ["dependencies"]
+test = "test"
+script = "script"
+solc = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1000
+via_ir = false
+# Fork tests read the same RPC urls the engine uses (a `.env` at the repository root); `test.mjs` exports them.
+fs_permissions = []
+remappings = ["forge-std/=dependencies/forge-std-1.9.4/src/"]
+
+[rpc_endpoints]
+arbitrum = "${ARBITRUM_RPC_URL}"
+mainnet = "${MAINNET_RPC_URL}"
+
+[dependencies]
+forge-std = "1.9.4"
+
+[soldeer]
+# The remapping is pinned above; soldeer must not rewrite it under a versioned name.
+remappings_generate = false
+remappings_regenerate = false

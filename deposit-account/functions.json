@@ -1,0 +1,817 @@
+{
+  "params": {
+    "c": "The credential: a wallet or a passkey (see `Credential`).",
+    "owners": "The first owner set, in order: exactly one credential for an account to be created with it; `saltOf` and `addressOf` compute any set's.",
+    "nonce": "The signing credential's next record-change nonce (`recordNonceOf`): each signature is accepted once.",
+    "deadline": "When the signature expires, as a Unix time in seconds: the call reverts after it.",
+    "due": "When the pending change being cancelled takes effect, as the contract recorded it: it names that change, so a cancellation needs no nonce.",
+    "signature": "A credential's signature over the EIP-712 message: `0x01 ‖ r ‖ s ‖ v` for a wallet, or `0x02 ‖ x ‖ y ‖` the ABI-encoded WebAuthn assertion for a passkey.",
+    "vaultFactory": "The strategy contract factory.",
+    "strategyId": "The strategy's id.",
+    "configHash": "The hash of the strategy contract's configuration, as the owner signed it.",
+    "domain": "A chain, by Circle's CCTP domain number (Ethereum 0, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19).",
+    "id": "An authorisation's id: a counter per account, given by `authoriseStrategy` at the home and the same on every chain.",
+    "vaultKey": "The key of an allowance, as `vaultKey` computes it from the factory, the strategy id and the configuration hash.",
+    "digest": "The EIP-712 digest that was signed (see `hashTypedData`).",
+    "structHash": "The EIP-712 hash of the signed struct.",
+    "user": "The user's id: a UUID, left-padded to 32 bytes."
+  },
+  "types": {
+    "Credential": "One owner credential. A wallet: `kind` 1, `x` its address left-padded, `y` zero. A passkey: `kind` 2, `x` and `y` the coordinates of its P-256 public key.",
+    "StrategyGrant": "The owner's authorisation to fund one strategy contract: `allowance` of USDC on the chain of `domain`, for the contract of `vaultFactory` with `strategyId` and `configHash`. Every field is signed; `nonce` is the signing credential's record-change nonce and `deadline` the signature's expiry.",
+    "Withdrawal": "A withdrawal the owner signs, every field included: `amount` of `token` (zero: the native coin) to `to`, with at most `maxFee` of it to `feeRecipient`. `to` and `feeRecipient` must still be the withdrawal address and the factory's fee recipient in effect when it executes. `nonce` is the signing credential's nonce on this chain and `deadline` the signature's expiry.",
+    "Grant": "An authorisation the home accepted, as `grant` returns it: the factory, the chain, whether its allowance was applied, the strategy id, the configuration hash, the allowance, and the trust epoch it was granted under (a cancelled trust voids it)."
+  },
+  "contracts": [
+    {
+      "name": "DepositAccount",
+      "source": "src/DepositAccount.sol",
+      "title": "The deposit contract",
+      "brief": "Each user's own contract: their balance and their owner record, at the same address on every supported chain.",
+      "summary": "Each user's own contract, at the same address on every supported chain. It holds the user's balance and the owner record: one to four credentials (passkeys or wallets) and the withdrawal address. The copy on Arbitrum is the **home**: every change to the record is signed and accepted there, waits 24 hours, and reaches the other chains' copies by a Circle message the home sends. Money leaves only to the withdrawal address, to a strategy contract the owner authorised (within the amount signed for), as a fee the owner signed, into the pinned USDT to USDC pool, or by Circle's bridge to this same address on another supported chain. There is no other call: no arbitrary call, no upgrade, no admin.",
+      "functions": {
+        "WALLET": {
+          "does": "The credential kind of a wallet: `x` is its address, left-padded; `y` is zero."
+        },
+        "PASSKEY": {
+          "does": "The credential kind of a passkey: `x` and `y` are its P-256 public key."
+        },
+        "MAX_CREDENTIALS": {
+          "does": "The most credentials an owner holds, pending additions counted."
+        },
+        "MAX_SIGNED_FEE": {
+          "does": "The most an owner-signed withdrawal pays as its fee, whatever maximum the owner signed: 50 USDC (50,000,000 units), in this chain's USDC or its pinned USDT. A withdrawal of any other token, the native coin included, pays no fee."
+        },
+        "DELAY": {
+          "does": "How long an addition, a removal, a withdrawal-address change and a new factory trust wait before they take effect."
+        },
+        "HOME_CHAIN_ID": {
+          "does": "Arbitrum One: the chain whose copy is the home of the owner record."
+        },
+        "HOME_DOMAIN": {
+          "does": "Arbitrum's Circle (CCTP) domain."
+        },
+        "FINALIZED": {
+          "does": "Circle's finality threshold for a finalized message: the only one this contract sends or accepts, and the one its bridge transfers ask for."
+        },
+        "MESSAGE_TRANSMITTER": {
+          "does": "Circle's CCTP V2 MessageTransmitterV2, the same address on every chain: it carries the home's messages to the copies."
+        },
+        "TOKEN_MESSENGER": {
+          "does": "Circle's CCTP V2 TokenMessengerV2, the same address on every chain: it burns USDC for the bridge."
+        },
+        "CONVERSION_BOUND_BP": {
+          "does": "The conversion's bound, in basis points under 1 USD per USDT: a swap never accepts less than 998 USDC per 1,000 USDT."
+        },
+        "BURN_FEE_CAP_BP": {
+          "does": "The most a bridge transfer may pay Circle, in basis points of the amount (0.1%)."
+        },
+        "ADD_CREDENTIAL_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to add a credential."
+        },
+        "REMOVE_CREDENTIAL_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to remove a credential."
+        },
+        "SET_WITHDRAWAL_ADDRESS_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to set the withdrawal address."
+        },
+        "CANCEL_REMOVAL_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to cancel a pending removal."
+        },
+        "CANCEL_ADDITION_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to cancel a pending addition."
+        },
+        "CANCEL_WITHDRAWAL_ADDRESS_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to cancel a pending withdrawal-address change."
+        },
+        "WITHDRAW_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs for a signed withdrawal."
+        },
+        "REVOKE_TRANSFER_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to revoke the transfer key on one chain."
+        },
+        "ALLOW_TRANSFER_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to allow the transfer key again on one chain."
+        },
+        "AUTHORISE_STRATEGY_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to authorise funding a strategy contract."
+        },
+        "CANCEL_TRUST_TYPEHASH": {
+          "does": "The EIP-712 type the owner signs to cancel a factory's pending trust."
+        },
+        "MAX_GRANT": {
+          "does": "The most one authorisation may grant (2^128 − 1), so no sum of them can overflow."
+        },
+        "RECORD_TAG": {
+          "does": "Tags a message carrying the owner record, so no other message can be read as one."
+        },
+        "AUTH_TAG": {
+          "does": "Tags a message carrying an authorisation from the home."
+        },
+        "factory": {
+          "does": "The deposit factory that created this account; the account reads the transfer key, the fee recipient and the escape hatch's state from it."
+        },
+        "transferRevoked": {
+          "does": "Whether the owner has revoked the transfer key on this chain."
+        },
+        "allowance": {
+          "does": "What the transfer key may still pay one strategy contract in this chain's USDC, by the key `vaultKey` computes."
+        },
+        "authorisationCount": {
+          "does": "How many authorisations the home has accepted; the last one's id."
+        },
+        "authorisationApplied": {
+          "does": "On a copy: whether the authorisation with this id has been applied (each id applies once)."
+        },
+        "initialize": {
+          "caller": "factory",
+          "does": "Sets the account's first owner set: one credential. Any further credential is an addition, which waits 24 hours.",
+          "who": "The deposit factory only, in the transaction that creates the account.",
+          "when": "Once.",
+          "checks": [
+            "Exactly one credential, well-shaped: a non-zero address with `y` zero, or a point on P-256. So a second owner can never be hidden in the account's address.",
+            "No code is checked at a wallet's address here, so an account can always be created where money already waits; a wallet that is a contract could never sign anyway (ECDSA only)."
+          ]
+        },
+        "isHome": {
+          "does": "Whether this copy is the home (this chain is Arbitrum)."
+        },
+        "synced": {
+          "does": "Whether this copy trusts its credentials: always at the home; on another chain once the home's record has reached it."
+        },
+        "recordNonceOf": {
+          "does": "A credential's next record-change nonce (used at the home)."
+        },
+        "localNonceOf": {
+          "does": "A credential's next local-action nonce on this chain."
+        },
+        "allowanceOf": {
+          "does": "What the transfer key may still pay the strategy contract of this factory, strategy and configuration, in this chain's USDC."
+        },
+        "vaultKey": {
+          "does": "The key of an allowance: the hash of the factory, the strategy id and the configuration hash."
+        },
+        "trustKey": {
+          "does": "The key of a factory's trust for one chain: the hash of the factory and the domain."
+        },
+        "isTrusted": {
+          "does": "Whether this account trusts a strategy contract factory for a chain now (on a copy, for its own chain)."
+        },
+        "trustOf": {
+          "does": "When a factory's trust for a chain took or takes effect (zero: none, or cancelled) and how many times it was proposed.",
+          "returns": {
+            "due": "When the trust took or takes effect (0: untrusted, or cancelled).",
+            "epoch": "How many times this factory's trust for this chain was proposed."
+          }
+        },
+        "grant": {
+          "does": "The home's authorisation with this id (zeros if none)."
+        },
+        "credentialId": {
+          "does": "A credential's id: the hash of its kind, `x` and `y`."
+        },
+        "credentials": {
+          "does": "The credentials in effect now: an addition past its 24 hours counts, a removal past its 24 hours does not, settled in storage or not. On a copy not yet synced, the first owner set, which it does not trust."
+        },
+        "withdrawalAddress": {
+          "does": "The withdrawal address in effect now (zero until one is set and its 24 hours have passed)."
+        },
+        "pendingWithdrawalAddress": {
+          "does": "A withdrawal-address change still waiting for its 24 hours, and when it takes effect (zeros if none).",
+          "returns": {
+            "next": "The address that will become the withdrawal address (zero: no change pending).",
+            "due": "When it takes effect (0: none pending)."
+          }
+        },
+        "removalDue": {
+          "does": "When a credential's pending removal takes effect (zero: none, or already in effect)."
+        },
+        "additionDue": {
+          "does": "When a credential's pending addition takes effect (zero: none, or already in effect)."
+        },
+        "version": {
+          "does": "The owner record's version in effect now, counting changes past their 24 hours; a copy is up to date when its version equals the home's."
+        },
+        "isCredential": {
+          "does": "Whether this credential is one in effect that this copy trusts."
+        },
+        "domainSeparator": {
+          "does": "The EIP-712 domain of the owner's messages: name \"DLTX Owner\", version \"1\", this contract's address, and no chain id."
+        },
+        "hashTypedData": {
+          "does": "The EIP-712 digest a credential signs, for a given struct hash, in this account's domain."
+        },
+        "checkOwnerSignature": {
+          "does": "Whether a credential in effect, and trusted on this chain, signed this digest. Never reverts on a malformed signature. The strategy contracts and their factory check the owner's other messages through it."
+        },
+        "addCredential": {
+          "caller": "owner",
+          "does": "Proposes a new credential. It takes effect 24 hours later unless cancelled.",
+          "who": "The owner: a record change signed by a credential in effect, with that credential's own record nonce.",
+          "when": "At the home (Arbitrum) only, before the signature's deadline.",
+          "checks": [
+            "A well-shaped credential not already in the set (a pending addition counts), and fewer than four counting pending additions.",
+            "A wallet must be a plain address: no contract code, except an EIP-7702 delegation, which still signs with its key.",
+            "Until it takes effect the new credential cannot sign, and any credential in effect may cancel it."
+          ]
+        },
+        "cancelAddition": {
+          "caller": "owner",
+          "does": "Cancels a credential's pending addition.",
+          "who": "The owner: signed by any credential in effect. No nonce: the message names the addition and its due time, so a replay can only cancel again.",
+          "when": "At the home only, before the addition takes effect and before the signature's deadline."
+        },
+        "proposeRemoval": {
+          "caller": "owner",
+          "does": "Proposes removing a credential. It takes effect 24 hours later unless cancelled.",
+          "who": "The owner: a record change signed by ANOTHER credential in effect, with that credential's own record nonce.",
+          "when": "At the home only, before the signature's deadline.",
+          "checks": [
+            "The credential is in effect (a pending addition is cancelled, not removed), and no removal of it is already pending.",
+            "At least one credential always remains: removals already pending are counted.",
+            "A credential whose removal is pending still signs until it takes effect."
+          ]
+        },
+        "cancelRemoval": {
+          "caller": "owner",
+          "does": "Cancels a credential's pending removal.",
+          "who": "The owner: signed by any credential in effect except the one being removed. No nonce: the message names the removal and its due time.",
+          "when": "At the home only, before the removal takes effect and before the signature's deadline.",
+          "checks": [
+            "The one exception: the credential being removed may cancel its own removal when that removal would leave a single other credential standing (pending removals counted, except those it proposed itself). So a thief holding one of two credentials cannot win the account by proposing first.",
+            "The other side of that rule: with two credentials in all, neither can remove the other (a standoff). The way out is to withdraw everything to the withdrawal address in effect, exit every strategy, and open a new account; with at least two other credentials standing, a stolen one can be removed."
+          ]
+        },
+        "setWithdrawalAddress": {
+          "caller": "owner",
+          "does": "Proposes the withdrawal address, the first one too. It takes effect 24 hours later unless cancelled; a new proposal replaces a pending one and restarts its 24 hours.",
+          "who": "The owner: a record change signed by a credential in effect, with that credential's own record nonce.",
+          "when": "At the home only, before the signature's deadline.",
+          "checks": [
+            "A non-zero address."
+          ],
+          "params": {
+            "next": "The new withdrawal address."
+          }
+        },
+        "cancelWithdrawalAddress": {
+          "caller": "owner",
+          "does": "Cancels a pending withdrawal-address change.",
+          "who": "The owner: signed by any credential in effect. No nonce: the message names the address and its due time.",
+          "when": "At the home only, before the change takes effect and before the signature's deadline.",
+          "params": {
+            "next": "The pending withdrawal address being cancelled."
+          }
+        },
+        "publish": {
+          "caller": "anyone",
+          "does": "Sends the owner record in effect (credentials, withdrawal address, version, and the time it was sent) to this same address on another chain, by a Circle message: no burn, no fee, finalized.",
+          "who": "Anyone.",
+          "when": "At the home only, to any domain but Arbitrum's own. Changes past their 24 hours are settled first, and a pending addition is never sent."
+        },
+        "handleReceiveFinalizedMessage": {
+          "caller": "circle",
+          "does": "Receives the home's message at a copy: either the owner record, which replaces the copy's credentials, withdrawal address and version, or an authorisation, which adds its allowance and trusts its factory on this chain. A message it does not take is ignored without reverting, so it cannot block the next one.",
+          "who": "Circle's message transmitter, delivering a message that this same address sent from Arbitrum. Anyone may relay Circle's attested message to the transmitter.",
+          "when": "On a copy only (never at the home), at the finalized threshold.",
+          "checks": [
+            "Sent from domain 3 (Arbitrum) by this same address.",
+            "A record: its first is taken at any version if the home sent it at or after this copy's deployment; after that, only a strictly higher version. One to four well-shaped credentials.",
+            "An authorisation: only once the copy holds a record (otherwise it reverts, so the message can be relayed again later), and each id once. A non-zero factory and configuration, on a chain with Circle USDC. The allowance adds up, saturating rather than overflowing."
+          ],
+          "params": {
+            "sourceDomain": "The CCTP domain the message comes from: only the home's, Arbitrum (3), is accepted.",
+            "sender": "The address that sent the message, as 32 bytes: only this same account at the home is accepted.",
+            "finalityThresholdExecuted": "The finality the message was attested at: only a finalized message is taken.",
+            "messageBody": "The home's message: its owner record and version, or an authorisation."
+          }
+        },
+        "handleReceiveUnfinalizedMessage": {
+          "does": "Circle's handler for an unfinalized message: always refuses, since this contract accepts finalized messages only."
+        },
+        "revokeTransfer": {
+          "caller": "owner",
+          "does": "Revokes the transfer key on this chain: it can no longer withdraw, fund, convert or bridge from this account here. Signed withdrawals and the escape hatch still work.",
+          "who": "The owner: a local action signed by a credential in effect, naming this chain, with that credential's own local nonce here.",
+          "when": "On any chain whose copy is synced, before the signature's deadline. Takes effect at once.",
+          "params": {
+            "nonce": "The signing credential's next nonce on this chain (`localNonceOf`): each signature is accepted once."
+          }
+        },
+        "allowTransfer": {
+          "caller": "owner",
+          "does": "Allows the transfer key again on this chain.",
+          "who": "The owner: a local action, as `revokeTransfer`.",
+          "when": "On any chain whose copy is synced, before the signature's deadline. Takes effect at once.",
+          "params": {
+            "nonce": "The signing credential's next nonce on this chain (`localNonceOf`): each signature is accepted once."
+          }
+        },
+        "authoriseStrategy": {
+          "caller": "owner",
+          "does": "Authorises funding one strategy contract: an amount of USDC on one supported chain, for the contract of one factory, strategy id and configuration hash. It gets an id. A factory not yet trusted for that chain becomes trusted 24 hours after the first authorisation naming it, cancellable until then.",
+          "who": "The owner: a local action signed by a credential in effect, with that credential's own local nonce.",
+          "when": "At the home only, before the signature's deadline.",
+          "checks": [
+            "A non-zero factory and configuration hash, and an amount above zero and at most `MAX_GRANT`.",
+            "The chain is a supported deposit chain: Ethereum, OP Mainnet, Arbitrum, Base, Polygon or HyperEVM.",
+            "For Arbitrum, the amount is added to the allowance at once if the factory is already trusted, or later by `applyAuthorisation`. For another chain it is only recorded here, for `dispatchAuthorisation`.",
+            "The allowance only grows by authorisations and only shrinks by funding."
+          ],
+          "params": {
+            "g": "The authorisation the owner signed (see `StrategyGrant`)."
+          }
+        },
+        "applyAuthorisation": {
+          "caller": "anyone",
+          "does": "Adds an Arbitrum authorisation, made while its factory's trust was pending, to the allowance.",
+          "who": "Anyone.",
+          "when": "At the home only, once the factory's trust is in effect.",
+          "checks": [
+            "The authorisation exists, is for Arbitrum and has not been applied.",
+            "The trust in effect is the very one it was granted under: an authorisation made under a cancelled trust never applies, even if the factory is trusted again later."
+          ]
+        },
+        "dispatchAuthorisation": {
+          "caller": "anyone",
+          "does": "Sends an authorisation for another chain to this same address there, by a Circle message (finalized). The copy applies each id once, so sending it again is harmless.",
+          "who": "Anyone, as often as needed (a message lost or expired).",
+          "when": "At the home only, once the factory's trust is in effect.",
+          "checks": [
+            "The authorisation exists and is for a chain other than Arbitrum.",
+            "The trust in effect is the very one it was granted under."
+          ]
+        },
+        "cancelTrust": {
+          "caller": "owner",
+          "does": "Cancels a factory's pending trust for one chain, and with it every authorisation granted under that trust, for good. A trust lets the transfer key fund the contracts that factory says are this account's, within each amount signed for them; this contract does not check the factory's code, so a trust the owner did not mean is cancelled here within its 24 hours.",
+          "who": "The owner: signed by any credential in effect. No nonce: the message names the factory, the chain and the due time.",
+          "when": "At the home only, before the trust takes effect and before the signature's deadline. Once in effect, a trust is permanent.",
+          "params": {
+            "domain": "The chain of the pending trust, by its CCTP domain number (Ethereum 0, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19)."
+          }
+        },
+        "withdraw": {
+          "caller": "transfer-key",
+          "does": "Pays an amount of a token (zero: the chain's native coin) to the withdrawal address, with no fee.",
+          "who": "A wallet credential in effect, calling from its own address; the transfer key unless the owner revoked it on this chain; and **anyone** once the deposit factory's transfer key has not checked in for 7 days (the escape hatch).",
+          "when": "Once a withdrawal address is in effect on this chain (on a copy, once the record has brought it).",
+          "checks": [
+            "The destination is always the withdrawal address in effect: the caller chooses only the token and the amount.",
+            "The native coin can reach the address before the contract exists there, or be forced in; the contract refuses a plain transfer once it exists."
+          ],
+          "params": {
+            "token": "The token to pay out; zero for the chain's native coin.",
+            "amount": "How much of `token` to pay, in its smallest unit."
+          }
+        },
+        "withdrawSigned": {
+          "caller": "owner",
+          "does": "The owner's signed withdrawal: the signed amount leaves, a fee of at most the signed maximum to the fee recipient and the rest to the withdrawal address.",
+          "who": "The owner: a local action signed by a credential in effect, with that credential's own local nonce. Anyone may submit it and chooses the fee, up to the signed maximum.",
+          "when": "On any chain whose copy is synced, before the signature's deadline. Revoking the transfer key does not stop it.",
+          "checks": [
+            "Every field is signed: token, amount, destination, maximum fee, fee recipient.",
+            "The signed destination must still be the withdrawal address in effect, and the signed fee recipient the deposit factory's in effect: a signature played after either changed reverts.",
+            "The fee is at most the signed maximum and at most the amount; no fee can be taken while the factory has no fee recipient.",
+            "The fee is also at most `MAX_SIGNED_FEE` (50 USDC) when the token is this chain's USDC or its pinned USDT, and zero for any other token, the native coin included: a maximum signed blind can't give the fee recipient more."
+          ],
+          "params": {
+            "w": "The withdrawal the owner signed (see `Withdrawal`).",
+            "fee": "The fee taken out of `w.amount` for the factory's fee recipient; at most `w.maxFee` and the compiled cap."
+          }
+        },
+        "fund": {
+          "caller": "transfer-key",
+          "does": "Pays this chain's USDC to a strategy contract the owner authorised.",
+          "who": "The transfer key only, unless the owner revoked it on this chain.",
+          "when": "Once a withdrawal address is in effect here, since a strategy's exit pays it.",
+          "checks": [
+            "The factory is trusted by this account for this chain.",
+            "The strategy contract exists (deployed before funded, its whole configuration validated by its factory) and the factory confirms it belongs to THIS account (`authorisedFor`).",
+            "The amount is within the allowance the owner signed for that factory, strategy and configuration, which it consumes."
+          ],
+          "params": {
+            "vault": "The strategy contract to pay: deployed, and registered to this account by `vaultFactory`.",
+            "amount": "How much USDC to pay, in its smallest unit (6 decimals)."
+          }
+        },
+        "convertSwap": {
+          "caller": "transfer-key",
+          "does": "Swaps USDT for USDC in this chain's pinned Uniswap V3 pool (0.01%), paid to this account.",
+          "who": "The transfer key only, unless the owner revoked it on this chain.",
+          "when": "On Ethereum, Arbitrum and Polygon, the chains with a pinned pool.",
+          "checks": [
+            "The minimum out is raised to at least the amount less 0.2% (998 USDC per 1,000 USDT); a tighter one asked for is kept.",
+            "The swap is on the pool itself, no router, and the account pays the pool only in its callback, during this call."
+          ],
+          "params": {
+            "amountIn": "How much USDT to swap, in its smallest unit (6 decimals).",
+            "minOut": "The least USDC to accept; raised to the contract's own bound when lower."
+          }
+        },
+        "uniswapV3SwapCallback": {
+          "caller": "callback",
+          "does": "Pays the pinned pool the USDT it is owed for the swap in progress.",
+          "who": "The pinned pool only.",
+          "when": "Only during `convertSwap`.",
+          "checks": [
+            "Pays at most the swap's amount in, and once per swap."
+          ],
+          "params": {
+            "amount0Delta": "What the swap owes the pool (positive) or receives from it (negative) in the pool's first token.",
+            "amount1Delta": "The same, in the pool's second token."
+          }
+        },
+        "convertBurn": {
+          "caller": "transfer-key",
+          "does": "Burns this chain's USDC by Circle's bridge (CCTP V2, standard transfer), to be minted to this same address on another supported chain. Anyone may complete the mint there.",
+          "who": "The transfer key only, unless the owner revoked it on this chain.",
+          "when": "On a chain with Circle USDC.",
+          "checks": [
+            "The destination is a supported deposit chain other than this one, and the recipient is always this same address.",
+            "The fee allowed is Circle's own minimum for the amount, read in the call, and a burn whose minimum is above 0.1% of the amount is refused.",
+            "The token approval is exact and reset to zero after the burn."
+          ],
+          "params": {
+            "amount": "How much USDC to burn here and mint on the other chain, in its smallest unit (6 decimals).",
+            "destinationDomain": "The deposit chain to mint on, by its CCTP domain number (Ethereum 0, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19); not this chain."
+          }
+        },
+        "burnMinFee": {
+          "does": "Circle's minimum fee for burning an amount on this chain (zero where the messenger has none).",
+          "params": {
+            "amount": "The amount to burn, in USDC's smallest unit."
+          }
+        },
+        "conversionPool": {
+          "does": "This chain's pinned USDT to USDC pool and its two tokens (zeros where there is none).",
+          "returns": {
+            "pool": "The pinned Uniswap V3 USDT/USDC pool on this chain (zero where there is none: only Ethereum, Arbitrum and Polygon have one).",
+            "usdt": "This chain's USDT (zero where there is no pool).",
+            "usdc": "This chain's USDC (zero where there is no pool)."
+          }
+        },
+        "cctpUsdc": {
+          "does": "This chain's Circle USDC and Circle domain (zeros where the account burns nothing).",
+          "returns": {
+            "usdc": "This chain's Circle USDC (zero where the account burns nothing).",
+            "domain": "This chain's CCTP domain number."
+          }
+        }
+      },
+      "events": {
+        "Initialised": {
+          "does": "The account was created with its first owner set."
+        },
+        "AdditionProposed": {
+          "does": "A credential's addition was proposed; it takes effect at `due` unless a current credential cancels it.",
+          "params": {
+            "id": "The credential's id: the hash of its kind and key (`credentialId`).",
+            "kind": "1 for a wallet, 2 for a passkey.",
+            "x": "The wallet's address left-padded, or the passkey's public key's x coordinate.",
+            "y": "Zero for a wallet, or the passkey's public key's y coordinate.",
+            "due": "When the addition takes effect."
+          }
+        },
+        "AdditionCancelled": {
+          "does": "A pending addition was cancelled.",
+          "params": {
+            "id": "The credential's id: the hash of its kind and key (`credentialId`).",
+            "due": "When it would have taken effect."
+          }
+        },
+        "CredentialAdded": {
+          "does": "A credential's addition took effect. A pending change takes effect at the first call that finds it due, so most of the owner's calls can emit it.",
+          "params": {
+            "id": "The credential's id: the hash of its kind and key (`credentialId`).",
+            "version": "The owner record's new version: it rises by one with every change that takes effect, and is how a copy knows it is current."
+          }
+        },
+        "RemovalProposed": {
+          "does": "A credential's removal was proposed; it takes effect at `due` unless cancelled.",
+          "params": {
+            "id": "The credential's id: the hash of its kind and key (`credentialId`).",
+            "due": "When the removal takes effect."
+          }
+        },
+        "RemovalCancelled": {
+          "does": "A pending removal was cancelled.",
+          "params": {
+            "id": "The credential's id: the hash of its kind and key (`credentialId`).",
+            "due": "When it would have taken effect."
+          }
+        },
+        "CredentialRemoved": {
+          "does": "A credential's removal took effect. A pending change takes effect at the first call that finds it due, so most of the owner's calls can emit it.",
+          "params": {
+            "id": "The credential's id: the hash of its kind and key (`credentialId`).",
+            "version": "The owner record's new version: it rises by one with every change that takes effect, and is how a copy knows it is current."
+          }
+        },
+        "WithdrawalAddressProposed": {
+          "does": "A new withdrawal address was proposed; it takes effect at `due` unless cancelled.",
+          "params": {
+            "next": "The proposed withdrawal address.",
+            "due": "When it takes effect."
+          }
+        },
+        "WithdrawalAddressCancelled": {
+          "does": "A pending withdrawal address was cancelled.",
+          "params": {
+            "next": "The address that was proposed.",
+            "due": "When it would have taken effect."
+          }
+        },
+        "WithdrawalAddressSet": {
+          "does": "A new withdrawal address took effect. A pending change takes effect at the first call that finds it due, so most of the owner's calls can emit it.",
+          "params": {
+            "previous": "The withdrawal address until now (zero: none).",
+            "next": "The withdrawal address from now on.",
+            "version": "The owner record's new version: it rises by one with every change that takes effect, and is how a copy knows it is current."
+          }
+        },
+        "Published": {
+          "does": "The home sent its owner record to this same address on another chain, through Circle's message transmitter.",
+          "params": {
+            "domain": "The chain it was sent to, by its CCTP domain number.",
+            "version": "The version of the record sent."
+          }
+        },
+        "RecordApplied": {
+          "does": "A copy took the home's owner record.",
+          "params": {
+            "version": "The version it now holds."
+          }
+        },
+        "RecordIgnored": {
+          "does": "A copy received a record from the home and kept its own: the record was not newer, or was published before this copy was deployed.",
+          "params": {
+            "received": "The version received.",
+            "current": "The version the copy holds."
+          }
+        },
+        "TransferRevoked": {
+          "does": "The owner revoked the transfer key on this chain, or allowed it again.",
+          "params": {
+            "revoked": "True when revoked, false when allowed again."
+          }
+        },
+        "StrategyAuthorised": {
+          "does": "The home accepted the owner's authorisation to fund a strategy contract.",
+          "params": {
+            "allowance": "The USDC the transfer key may pay that strategy contract, in its smallest unit.",
+            "trustDue": "When the factory's trust for that chain takes or took effect.",
+            "trustEpoch": "The trust it was granted under: cancelling that trust voids it."
+          }
+        },
+        "TrustProposed": {
+          "does": "A factory not yet trusted for a chain was named by an authorisation: it becomes trusted at `due` unless cancelled.",
+          "params": {
+            "due": "When the trust takes effect.",
+            "epoch": "How many times this factory's trust for this chain was proposed, this one included."
+          }
+        },
+        "TrustCancelled": {
+          "does": "The owner cancelled a factory's pending trust for a chain, voiding every authorisation granted under it.",
+          "params": {
+            "due": "When the trust would have taken effect."
+          }
+        },
+        "AuthorisationApplied": {
+          "does": "An authorisation's allowance was added on this chain.",
+          "params": {
+            "added": "The USDC added to the allowance.",
+            "remaining": "The allowance now left for that strategy contract."
+          }
+        },
+        "AuthorisationDispatched": {
+          "does": "The home sent an authorisation to this same address on another chain.",
+          "params": {
+            "domain": "The chain it was sent to, by its CCTP domain number."
+          }
+        },
+        "AuthorisationIgnored": {
+          "does": "A copy received an authorisation it had already applied, and changed nothing."
+        },
+        "Withdrawn": {
+          "does": "Money left the account for the withdrawal address.",
+          "params": {
+            "token": "The token paid; zero for the native coin.",
+            "to": "The withdrawal address it went to.",
+            "amount": "What reached the withdrawal address, after the fee.",
+            "fee": "What went to the fee recipient (zero but for a signed withdrawal).",
+            "by": "Who submitted the call."
+          }
+        },
+        "Funded": {
+          "does": "The account paid USDC to one of its strategy contracts.",
+          "params": {
+            "vault": "The strategy contract paid.",
+            "amount": "The USDC paid, in its smallest unit."
+          }
+        },
+        "Swapped": {
+          "does": "The account converted USDT to USDC in the pinned pool.",
+          "params": {
+            "usdtIn": "The USDT swapped.",
+            "usdcOut": "The USDC received."
+          }
+        },
+        "Burned": {
+          "does": "The account burned USDC by Circle's bridge, to be minted to this same address on another chain.",
+          "params": {
+            "domain": "The chain it will be minted on, by its CCTP domain number.",
+            "amount": "The USDC burned.",
+            "maxFee": "The most Circle may keep from it."
+          }
+        }
+      },
+      "errors": {
+        "NotFactory": "`initialize` was not called by the factory.",
+        "AlreadyInitialised": "The account was already initialised.",
+        "NotInitialised": "Called on the implementation the accounts copy, which holds no record and serves no one.",
+        "BadOwnerSet": "The first owner set is not exactly one credential.",
+        "BadCredential": "A credential is malformed: an unknown kind, a zero wallet, or a key not on the P-256 curve.",
+        "NotAllowed": "The caller may not make this call: not the transfer key (or it is revoked), not a wallet credential, and the escape hatch is not open; or, for the swap callback, not the pinned pool during a swap.",
+        "NotHome": "A call only the home takes (a change to the owner record, an authorisation, or sending either to another chain) was made on a copy: the home is on Arbitrum.",
+        "NotCopy": "A record message reached the home, which sends records and never takes one.",
+        "BadSignature": "The signature is not from a credential in effect on this chain.",
+        "BadNonce": "The nonce is not the signing credential's next one.",
+        "Expired": "The signature's deadline has passed.",
+        "AlreadyMember": "The credential is already in the record, or its addition is pending.",
+        "NotMember": "The credential is not in effect: a pending addition is cancelled, not removed.",
+        "TooManyCredentials": "The record already holds four credentials, pending additions counted.",
+        "LastCredential": "The removal would leave no credential standing, pending removals counted.",
+        "AlreadyPending": "The credential's removal is already pending.",
+        "NothingPending": "No pending change matches the one named (its credential, address or factory, and its due time), or it already took effect.",
+        "SelfRemoval": "A credential proposed its own removal: another credential must.",
+        "SelfCancel": "The credential being removed tried to cancel its own removal, which it may do only when that removal would leave it the last one standing.",
+        "ZeroAddress": "The proposed withdrawal address is zero.",
+        "NoWithdrawalAddress": "No withdrawal address is in effect on this chain yet.",
+        "FeeAboveMax": "The fee is above the signed maximum, above the amount, or above the compiled cap: `MAX_SIGNED_FEE` in this chain's USDC or pinned USDT, zero in any other token.",
+        "NoFeeRecipient": "A fee was asked while the factory has no fee recipient.",
+        "NotOwnVault": "The strategy contract does not exist, or its factory does not register it to this account.",
+        "NotTrusted": "The factory is not trusted by this account for this chain (yet, or any more).",
+        "NoGrant": "No authorisation has this id.",
+        "AlreadyApplied": "The authorisation's allowance was already added.",
+        "AllowanceExceeded": "The amount is above what the owner authorised for that strategy contract.",
+        "ConversionUnavailable": "This chain has no USDC for the account to pay or burn, or no pinned pool to convert in.",
+        "BadDomain": "The chain named is not a supported deposit chain, is this one, or does not fit the call (an authorisation for Arbitrum is applied, one for another chain dispatched).",
+        "BadAmount": "The amount is zero or out of range: an authorisation above the maximum grant or missing its factory or configuration, a swap too large, or a pool asking for more than the swap's amount.",
+        "BurnFeeTooHigh": "Circle's minimum fee for the burn is above the contract's cap on it.",
+        "BelowMinimum": "The swap would return less USDC than the minimum.",
+        "TransferFailed": "A token or coin transfer failed, or the token has no code.",
+        "Reentered": "A call re-entered the account while a payment was under way.",
+        "NotTransmitter": "A message handler was called by someone other than Circle's message transmitter.",
+        "NotHomeMessage": "The message does not come from this same account on Arbitrum.",
+        "NotFinalized": "The message was not attested at finality.",
+        "BadMessage": "The message is malformed: too short, of an unknown kind, or with an invalid record.",
+        "NotSynced": "This copy has not yet received the home's owner record, so it cannot check a signature or let money leave.",
+        "NotWithdrawalAddress": "The signed withdrawal names an address that is not the withdrawal address in effect.",
+        "NotFeeRecipient": "The signed withdrawal names a fee recipient that is not the factory's in effect."
+      }
+    },
+    {
+      "name": "DepositFactory",
+      "source": "src/DepositFactory.sol",
+      "title": "The deposit factory",
+      "brief": "Creates each user's deposit contract, and holds DLTX's transfer key and offline recovery key for them.",
+      "summary": "Creates each user's deposit contract, at an address computed from the user's id and their first owner set, the same on every chain, and holds DLTX's keys for them: the transfer key, which must check in daily, and the offline recovery key. Its only constructor argument is the recovery key. It holds no money and names no strategy contract factory: each account trusts the factories its owner authorises.",
+      "functions": {
+        "STOP_AFTER": {
+          "does": "How long the transfer key may go without checking in before the escape hatch opens."
+        },
+        "implementation": {
+          "does": "The deposit contract's code every account is a minimal proxy (EIP-1167) of, created by this factory's constructor."
+        },
+        "transferKey": {
+          "does": "DLTX's transfer key on this chain (zero until the recovery key sets it)."
+        },
+        "recovery": {
+          "does": "DLTX's offline recovery key."
+        },
+        "pendingRecovery": {
+          "does": "A successor the recovery key proposed, not yet accepted (zero if none)."
+        },
+        "feeRecipient": {
+          "does": "Where the fee of an owner-signed withdrawal goes; zero means no fee can be taken."
+        },
+        "lastCheckIn": {
+          "does": "The transfer key's last check-in; the factory's deployment until the first."
+        },
+        "saltOf": {
+          "does": "The CREATE2 salt of a user's account: the hash of their id and their first owner set, in order."
+        },
+        "addressOf": {
+          "does": "A user's account address for this first owner set, deployed or not."
+        },
+        "deploy": {
+          "caller": "anyone",
+          "does": "Creates a user's account with its first owner set, or returns it if it already exists.",
+          "who": "Anyone, on any chain: whoever deploys it, the account starts with the user's own credentials, since they are part of its address.",
+          "when": "Any time; the account's address can hold money before it exists.",
+          "checks": [
+            "The owner set is exactly one well-shaped credential (a point on P-256 or a non-zero address), as `initialize` checks; any other set reverts, and nothing is created at its address."
+          ]
+        },
+        "setTransferKey": {
+          "caller": "recovery",
+          "does": "Sets or replaces the transfer key on this chain.",
+          "who": "The recovery key (the first setting, or a lost or stolen key), or the current transfer key itself (a planned rotation).",
+          "checks": [
+            "A non-zero address.",
+            "Setting a key is not itself a check-in, but the recovery key can set a key it holds, which then checks in: the escape hatch protects against a DLTX that has gone, not against its recovery key. Your own signed withdrawal, or a wallet credential's `withdraw`, needs neither."
+          ],
+          "params": {
+            "next": "The new transfer key for this chain."
+          }
+        },
+        "checkIn": {
+          "caller": "transfer-key",
+          "does": "Resets the escape hatch's 7-day clock.",
+          "who": "The transfer key only.",
+          "when": "Daily, whatever the accounts need."
+        },
+        "stopped": {
+          "does": "Whether 7 days have passed without a check-in: anyone may then have any account on this chain pay its withdrawal address."
+        },
+        "setFeeRecipient": {
+          "caller": "recovery",
+          "does": "Sets where the fee of an owner-signed withdrawal goes; zero stops all fees.",
+          "who": "The recovery key only.",
+          "checks": [
+            "The recipient receives only fees the owner signed for, and a signed withdrawal naming a previous recipient no longer executes."
+          ],
+          "params": {
+            "next": "The new fee recipient; zero stops all fees."
+          }
+        },
+        "proposeRecovery": {
+          "caller": "recovery",
+          "does": "Proposes the recovery key's successor; zero withdraws a proposal.",
+          "who": "The recovery key only.",
+          "params": {
+            "next": "The proposed successor recovery key; zero withdraws a proposal."
+          }
+        },
+        "acceptRecovery": {
+          "caller": "recovery",
+          "does": "Completes the handover: the proposed key becomes the recovery key.",
+          "who": "The proposed successor only, which proves it can sign.",
+          "when": "After `proposeRecovery`."
+        }
+      },
+      "events": {
+        "Deployed": {
+          "does": "A user's deposit contract was created.",
+          "params": {
+            "account": "The new deposit contract's address.",
+            "salt": "The salt it was created with (`saltOf`)."
+          }
+        },
+        "TransferKeySet": {
+          "does": "The transfer key changed.",
+          "params": {
+            "previous": "The transfer key until now.",
+            "next": "The transfer key from now on.",
+            "by": "Who changed it: the recovery key, or the transfer key itself."
+          }
+        },
+        "CheckedIn": {
+          "does": "The transfer key checked in, restarting the escape hatch's 7-day clock.",
+          "params": {
+            "key": "The transfer key.",
+            "at": "When, as a Unix time in seconds."
+          }
+        },
+        "FeeRecipientSet": {
+          "does": "The fee recipient changed.",
+          "params": {
+            "previous": "The fee recipient until now.",
+            "next": "The fee recipient from now on (zero: no fees)."
+          }
+        },
+        "RecoveryProposed": {
+          "does": "The recovery key proposed its successor.",
+          "params": {
+            "current": "The recovery key.",
+            "proposed": "The proposed successor (zero: a proposal withdrawn)."
+          }
+        },
+        "RecoverySet": {
+          "does": "The proposed successor accepted and became the recovery key.",
+          "params": {
+            "previous": "The recovery key until now.",
+            "next": "The recovery key from now on."
+          }
+        }
+      },
+      "errors": {
+        "NotAllowed": "The caller is not the key this call needs: the recovery key, the transfer key, or the proposed successor.",
+        "ZeroAddress": "A key was set to zero, at deployment or after.",
+        "DeployFailed": "The deposit contract was not created at its expected address."
+      }
+    }
+  ]
+}

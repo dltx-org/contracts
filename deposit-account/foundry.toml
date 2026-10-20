@@ -1,0 +1,41 @@
+# The user's deposit contract and its factory.
+# One factory at the same address on every EVM chain (the deterministic deployer), one EIP-1167 deposit
+# account per user from it. The build must be byte-identical everywhere, so the metadata hash is off:
+# the factory's address is the hash of its creation code.
+[profile.default]
+src = "src"
+out = "out"
+libs = ["dependencies"]
+test = "test"
+script = "script"
+solc = "0.8.37"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 1
+via_ir = true
+bytecode_hash = "none"
+cbor_metadata = false
+# the fork tests read slice 2's vault factory build (test/fixtures, see its README section)
+fs_permissions = [{ access = "read", path = "./test/fixtures" }]
+# the seam test (test/Seam.t.sol) imports the vault project's pure libraries for its types and pins
+allow_paths = ["../strategy-vault/src/lib"]
+# HyperEVM's small blocks hold 2–3M gas; a fork test deploys the factory (≈ 5.8M) in one call
+disable_block_gas_limit = true
+remappings = [
+  "forge-std/=dependencies/forge-std-1.9.4/src/",
+  "@openzeppelin/contracts/=dependencies/@openzeppelin-contracts-5.6.1/",
+  "@vault/=../strategy-vault/src/",
+]
+
+[rpc_endpoints]
+arbitrum = "${ARBITRUM_RPC_URL}"
+hyperevm = "${HYPEREVM_RPC_URL}"
+
+[dependencies]
+forge-std = "1.9.4"
+"@openzeppelin-contracts" = "5.6.1"
+
+[soldeer]
+# The remappings are pinned above; soldeer must not rewrite them under versioned names.
+remappings_generate = false
+remappings_regenerate = false

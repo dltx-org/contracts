@@ -1,0 +1,11 @@
+{
+  "name": "@contracts/deposit-account",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The user's deposit contract (owner credentials, withdrawal address, funding of authorised vaults) and its CREATE2 factory (Foundry). Unit tests always; fork tests skip without the RPC urls.",
+  "scripts": {
+    "build": "forge build",
+    "test": "node test.mjs"
+  }
+}
