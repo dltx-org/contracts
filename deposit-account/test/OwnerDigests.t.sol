@@ -54,7 +54,9 @@ contract OwnerDigestsTest is Helpers {
     }
 
     function test_digestVector() public {
-        vm.etch(ACCOUNT_V, address(a).code);
+        // the implementation's code, not the proxy's: a proxy etched without its storage points nowhere,
+        // and the digest depends on the account's address alone (frozen for every version, §3.6 rule 4)
+        vm.etch(ACCOUNT_V, f.genesis().code);
         DepositAccount at = DepositAccount(ACCOUNT_V);
         StrategyGrant memory g = StrategyGrant(FACTORY_V, 3, STRATEGY_V, CONFIG_V, 250_000_000, 4, 1_800_000_000);
         bytes32 digest = _authorise(at, 42161, g);

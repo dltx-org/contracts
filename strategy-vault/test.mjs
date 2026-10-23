@@ -134,8 +134,13 @@ const runtimesOf = (file) =>
     .map((m) => `${m[1]}=${m[2].toLowerCase()}`)
     .sort()
 const testedRuntimes = runtimesOf('test/Pinned.t.sol')
-if (testedRuntimes.length !== 3 || JSON.stringify(testedRuntimes) !== JSON.stringify(runtimesOf('script/Deploy.s.sol'))) {
-  console.error('strategy-vault: script/Deploy.s.sol and test/Pinned.t.sol pin different module runtimes')
+if (
+  testedRuntimes.length !== 3 ||
+  JSON.stringify(testedRuntimes) !== JSON.stringify(runtimesOf('script/Deploy.s.sol'))
+) {
+  console.error(
+    'strategy-vault: script/Deploy.s.sol and test/Pinned.t.sol pin different module runtimes',
+  )
   process.exit(1)
 }
 const [largest, most] = Object.entries(sizes).sort(

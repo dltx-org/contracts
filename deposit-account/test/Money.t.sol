@@ -2,11 +2,12 @@
 pragma solidity 0.8.37;
 
 import {Credential, DepositAccount, Withdrawal} from "../src/DepositAccount.sol";
+import {DepositAccountState} from "../src/DepositAccountState.sol";
 import {DepositFactory} from "../src/DepositFactory.sol";
 import {Helpers, MockPool, MockToken, MockTokenMessenger} from "./Helpers.sol";
 
 /*
- * The money (spec §8.2): the withdrawal and its escape hatch, the owner-signed fee, funding an
+ * The money (spec §8.2): the withdrawal and its escape hatch, the owner's flat exit fee (amendment E), funding an
  * authorised vault, the conversion. No fork: Arbitrum's pinned USDC, USDT0, pool and Circle's
  * TokenMessengerV2 are mocks etched at their addresses (the fork tests use the real ones).
  */
@@ -20,7 +21,7 @@ contract MoneyTest is Helpers {
     DepositFactory f;
     DepositAccount a;
 
-    function setUp() public {
+    function setUp() public virtual {
         vm.chainId(42161);
         f = deployFactory();
         vm.startPrank(RECOVERY);
@@ -50,11 +51,13 @@ contract MoneyTest is Helpers {
 
     // ── withdraw: only to the withdrawal address ─────────────────────────────────────────────
 
+    /// The owner's own exit pays the flat 1 USD fee (amendment E).
     function test_aWalletCredentialWithdrawsToTheWithdrawalAddress() public {
         withAddress();
         vm.prank(vm.addr(WALLET_A));
         a.withdraw(USDC, 100e6);
-        assertEq(usdc(DEST), 100e6);
+        assertEq(usdc(DEST), 99e6);
+        assertEq(usdc(FEES), 1e6);
         assertEq(usdc(address(a)), 900e6);
     }
 
@@ -67,7 +70,7 @@ contract MoneyTest is Helpers {
         (uint256 nonce, uint256 deadline, bytes memory sig) = revokeSig(a, PASSKEY_A, true);
         a.revokeTransfer(nonce, deadline, sig);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.withdraw(USDC, 100e6);
         (nonce, deadline, sig) = revokeSig(a, WALLET_A, false);
         a.allowTransfer(nonce, deadline, sig);
@@ -81,7 +84,7 @@ contract MoneyTest is Helpers {
         address[3] memory others = [STRANGER, RECOVERY, vm.addr(WALLET_B)];
         for (uint256 i; i < 3; ++i) {
             vm.prank(others[i]);
-            vm.expectRevert(DepositAccount.NotAllowed.selector);
+            vm.expectRevert(DepositAccountState.NotAllowed.selector);
             a.withdraw(USDC, 1e6);
         }
     }
@@ -91,10 +94,10 @@ contract MoneyTest is Helpers {
     function test_theEscapeHatchOpensAfterSevenDaysWithoutACheckIn() public {
         withAddress();
         vm.prank(TRANSFER);
-        f.checkIn();
+        f.checkIn(supported());
         vm.warp(vm.getBlockTimestamp() + 7 days - 1);
         vm.prank(STRANGER);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.withdraw(USDC, 1_000e6);
         vm.warp(vm.getBlockTimestamp() + 1);
         vm.prank(STRANGER);
@@ -118,7 +121,7 @@ contract MoneyTest is Helpers {
 
     function test_noWithdrawalWithoutAnAddress() public {
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NoWithdrawalAddress.selector);
+        vm.expectRevert(DepositAccountState.NoWithdrawalAddress.selector);
         a.withdraw(USDC, 1e6);
     }
 
@@ -153,60 +156,63 @@ contract MoneyTest is Helpers {
         assertEq(MockToken(USDT).balanceOf(DEST), 5e6);
     }
 
-    // ── the owner-signed withdrawal and its fee (decision 19) ────────────────────────────────
+    // ── the owner's exits and the flat fee (decision 19, amendment E) ──────────────────────────
 
-    function test_aSignedWithdrawalPaysItsFeeAndIsConsumedOnce() public {
-        withAddress();
-        Withdrawal memory w = withdrawal(a, USDC, 100e6, 2e6);
-        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
-        vm.prank(STRANGER); // anyone submits
-        a.withdrawSigned(w, 1.5e6, sig);
-        assertEq(usdc(DEST), 98.5e6);
-        assertEq(usdc(FEES), 1.5e6);
-        vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BadNonce.selector);
-        a.withdrawSigned(w, 1.5e6, sig);
+    function test_theFeeIsOneUsdCompiled() public view {
+        assertEq(a.EXIT_FEE(), 1e6);
     }
 
-    function test_aFeeTheOwnerDidNotSignIsRefused() public {
+    function test_aSignedWithdrawalPaysTheFlatFeeAndIsConsumedOnce() public {
         withAddress();
         Withdrawal memory w = withdrawal(a, USDC, 100e6, 1e6);
+        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
+        vm.prank(STRANGER); // anyone submits; the second argument is ignored
+        a.withdrawSigned(w, 0, sig);
+        assertEq(usdc(DEST), 99e6);
+        assertEq(usdc(FEES), 1e6);
+        vm.prank(TRANSFER);
+        vm.expectRevert(DepositAccountState.BadNonce.selector);
+        a.withdrawSigned(w, 0, sig);
+    }
+
+    /// The owner signs at least the fee; every field is signed.
+    function test_theFeeMustBeSignedAndEveryFieldIsBound() public {
+        withAddress();
+        Withdrawal memory w = withdrawal(a, USDC, 100e6, 1e6 - 1);
         bytes memory sig = signWithdrawal(a, WALLET_A, w);
+        vm.expectRevert(DepositAccountState.FeeAboveMax.selector);
+        a.withdrawSigned(w, 0, sig);
+        w = withdrawal(a, USDC, 100e6, 1e6);
+        sig = signWithdrawal(a, WALLET_A, w);
         vm.startPrank(TRANSFER);
-        vm.expectRevert(DepositAccount.FeeAboveMax.selector);
-        a.withdrawSigned(w, 1e6 + 1, sig);
         Withdrawal memory other = w;
         other.maxFee = 2e6; // a larger max: not what was signed
-        vm.expectRevert(DepositAccount.BadSignature.selector);
-        a.withdrawSigned(other, 2e6, sig);
+        vm.expectRevert(DepositAccountState.BadSignature.selector);
+        a.withdrawSigned(other, 0, sig);
         other = withdrawal(a, USDC, 101e6, 1e6);
-        vm.expectRevert(DepositAccount.BadSignature.selector);
-        a.withdrawSigned(other, 1e6, sig);
+        vm.expectRevert(DepositAccountState.BadSignature.selector);
+        a.withdrawSigned(other, 0, sig);
         other = withdrawal(a, USDT, 100e6, 1e6);
-        vm.expectRevert(DepositAccount.BadSignature.selector);
-        a.withdrawSigned(other, 1e6, sig);
+        vm.expectRevert(DepositAccountState.BadSignature.selector);
+        a.withdrawSigned(other, 0, sig);
         other = withdrawal(a, USDC, 100e6, 1e6);
         other.feeRecipient = STRANGER; // another fee recipient: not what was signed
-        vm.expectRevert(DepositAccount.BadSignature.selector);
-        a.withdrawSigned(other, 1e6, sig);
+        vm.expectRevert(DepositAccountState.BadSignature.selector);
+        a.withdrawSigned(other, 0, sig);
         vm.stopPrank();
-        // and a withdrawal by the transfer key alone never carries one
-        vm.prank(TRANSFER);
-        a.withdraw(USDC, 10e6);
-        assertEq(usdc(FEES), 0);
     }
 
     /// The destination is signed: a withdrawal signed before an address change can't be played
     /// after it, to either address.
     function test_aSignedWithdrawalBindsTheWithdrawalAddress() public {
         withAddress();
-        Withdrawal memory w = withdrawal(a, USDC, 100e6, 0);
+        Withdrawal memory w = withdrawal(a, USDC, 100e6, 1e6);
         bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
         setWithdrawal(a, WALLET_A, DEST2);
         vm.warp(vm.getBlockTimestamp() + 24 hours);
         w.deadline = vm.getBlockTimestamp() + 1 hours; // (the signature's own deadline would have passed)
         sig = signWithdrawal(a, PASSKEY_A, w);
-        vm.expectRevert(DepositAccount.NotWithdrawalAddress.selector);
+        vm.expectRevert(DepositAccountState.NotWithdrawalAddress.selector);
         a.withdrawSigned(w, 0, sig);
         assertEq(usdc(DEST), 0);
         assertEq(usdc(DEST2), 0);
@@ -219,23 +225,185 @@ contract MoneyTest is Helpers {
         bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
         vm.prank(RECOVERY);
         f.setFeeRecipient(STRANGER);
-        vm.expectRevert(DepositAccount.NotFeeRecipient.selector);
-        a.withdrawSigned(w, 1e6, sig);
-        vm.expectRevert(DepositAccount.NotFeeRecipient.selector);
+        vm.expectRevert(DepositAccountState.NotFeeRecipient.selector);
         a.withdrawSigned(w, 0, sig);
         assertEq(usdc(STRANGER), 0);
     }
 
-    function test_aSignedWithdrawalWithoutAFeeNeedsNoRecipient() public {
+    /// No fee recipient: no fee, all of it to the owner.
+    function test_noFeeRecipientNoFee() public {
         withAddress();
         vm.prank(RECOVERY);
         f.setFeeRecipient(address(0));
         Withdrawal memory w = withdrawal(a, USDC, 10e6, 1e6);
-        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
-        vm.expectRevert(DepositAccount.NoFeeRecipient.selector);
-        a.withdrawSigned(w, 1e6, sig);
-        a.withdrawSigned(w, 0, sig);
+        a.withdrawSigned(w, 0, signWithdrawal(a, PASSKEY_A, w));
         assertEq(usdc(DEST), 10e6);
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(USDC, 10e6);
+        assertEq(usdc(DEST), 20e6);
+    }
+
+    /// A fee transfer that reverts (USDC blacklisting the fee address) never blocks the withdrawal:
+    /// it proceeds without the fee, whole.
+    function test_aBlockedFeeNeverBlocksTheWithdrawal() public {
+        withAddress();
+        vm.mockCallRevert(USDC, abi.encodeWithSelector(MockToken.transfer.selector, FEES, 1e6), "blacklisted");
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(USDC, 10e6);
+        assertEq(usdc(DEST), 10e6);
+        Withdrawal memory w = withdrawal(a, USDC, 10e6, 1e6);
+        a.withdrawSigned(w, 0, signWithdrawal(a, PASSKEY_A, w));
+        assertEq(usdc(DEST), 20e6);
+        assertEq(usdc(FEES), 0);
+        // a fee transfer that answers false: the same
+        vm.clearMockedCalls();
+        vm.mockCall(USDC, abi.encodeWithSelector(MockToken.transfer.selector, FEES, 1e6), abi.encode(false));
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(USDC, 10e6);
+        assertEq(usdc(DEST), 30e6);
+    }
+
+    /// When a fee is due, an amount at or below it is refused: nothing moves, the money stays. Above
+    /// it, the rest leaves (1.01 USD: 0.01 to the owner). With no fee due, any amount leaves.
+    function test_anAmountAtOrBelowADueFeeIsRefused() public {
+        withAddress();
+        vm.startPrank(vm.addr(WALLET_A));
+        vm.expectRevert(DepositAccountState.AmountNotAboveFee.selector);
+        a.withdraw(USDC, 1e6);
+        vm.expectRevert(DepositAccountState.AmountNotAboveFee.selector);
+        a.withdraw(USDC, 0.5e6);
+        a.withdraw(USDC, 1.01e6);
+        vm.stopPrank();
+        assertEq(usdc(DEST), 0.01e6);
+        assertEq(usdc(FEES), 1e6);
+        Withdrawal memory w = withdrawal(a, USDC, 1e6, 1e6);
+        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
+        vm.expectRevert(DepositAccountState.AmountNotAboveFee.selector);
+        a.withdrawSigned(w, 0, sig);
+        // no fee recipient: no fee due, any amount
+        vm.prank(RECOVERY);
+        f.setFeeRecipient(address(0));
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(USDC, 0.5e6);
+        assertEq(usdc(DEST), 0.51e6);
+    }
+
+    /// E4b (Codex's review): the WHOLE balance at or below the fee leaves free, by either owner path,
+    /// so the owner can always empty the account without DLTX; part of it is still refused.
+    function test_theWholeBalanceAtOrBelowTheFeeLeavesFree() public {
+        withAddress();
+        uint256 all = usdc(address(a));
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(USDC, all - 0.8e6);
+        assertEq(usdc(address(a)), 0.8e6);
+        uint256 dest = usdc(DEST);
+        uint256 fees = usdc(FEES);
+        vm.startPrank(vm.addr(WALLET_A));
+        vm.expectRevert(DepositAccountState.AmountNotAboveFee.selector);
+        a.withdraw(USDC, 0.5e6);
+        a.withdraw(USDC, 0.8e6);
+        vm.stopPrank();
+        assertEq(usdc(address(a)), 0);
+        assertEq(usdc(DEST), dest + 0.8e6);
+        assertEq(usdc(FEES), fees);
+        // signed: exactly the fee, the whole balance, leaves whole
+        deal(USDC, address(a), 1e6);
+        Withdrawal memory w = withdrawal(a, USDC, 1e6, 1e6);
+        a.withdrawSigned(w, 0, signWithdrawal(a, PASSKEY_A, w));
+        assertEq(usdc(address(a)), 0);
+        assertEq(usdc(DEST), dest + 1.8e6);
+        assertEq(usdc(FEES), fees);
+    }
+
+    /// One rule for every signature of USDC or USDT: a maximum of at least the fee, even when no fee
+    /// turns out due (no recipient); signed again with it, it leaves whole.
+    function test_theMaxFeeRuleHoldsEvenWithNoFeeDue() public {
+        withAddress();
+        vm.prank(RECOVERY);
+        f.setFeeRecipient(address(0));
+        Withdrawal memory w = withdrawal(a, USDC, 10e6, 0);
+        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
+        vm.expectRevert(DepositAccountState.FeeAboveMax.selector);
+        a.withdrawSigned(w, 0, sig);
+        w = withdrawal(a, USDC, 10e6, 1e6);
+        a.withdrawSigned(w, 0, signWithdrawal(a, PASSKEY_A, w));
+        assertEq(usdc(DEST), 10e6);
+    }
+
+    /// A failed fee says so: `Withdrawn` names the whole amount and a fee of zero.
+    function test_aFailedFeeIsReportedAsNone() public {
+        withAddress();
+        vm.mockCallRevert(USDC, abi.encodeWithSelector(MockToken.transfer.selector, FEES, 1e6), "blacklisted");
+        vm.expectEmit(address(a));
+        emit DepositAccountState.Withdrawn(USDC, DEST, 10e6, 0, vm.addr(WALLET_A));
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(USDC, 10e6);
+    }
+
+    /// USDT with no return value (a quiet token) pays its fee like any other.
+    function test_aQuietUsdtPaysTheFee() public {
+        withAddress();
+        MockToken(USDT).setQuiet(true);
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(USDT, 10e6);
+        assertEq(MockToken(USDT).balanceOf(FEES), 1e6);
+        assertEq(MockToken(USDT).balanceOf(DEST), 9e6);
+    }
+
+    /// The chain's pinned USDT (Arbitrum's USD₮0), 6 decimals as USDC: the same fee.
+    function test_thePinnedUsdtPaysTheSameFee() public {
+        withAddress();
+        Withdrawal memory w = withdrawal(a, USDT, 100e6, 1e6);
+        a.withdrawSigned(w, 0, signWithdrawal(a, WALLET_A, w));
+        assertEq(MockToken(USDT).balanceOf(FEES), 1e6);
+        assertEq(MockToken(USDT).balanceOf(DEST), 99e6);
+    }
+
+    /// No caller but the owner pays a fee: the transfer key's withdrawal and the escape hatch's are
+    /// whole, so no one can turn the owner's money into fees a dollar at a time (amendment E).
+    function test_onlyTheOwnersOwnExitPaysAFee() public {
+        withAddress();
+        vm.prank(TRANSFER);
+        a.withdraw(USDC, 100e6);
+        assertEq(usdc(DEST), 100e6);
+        vm.warp(vm.getBlockTimestamp() + 7 days); // the hatch open
+        for (uint256 i; i < 5; ++i) {
+            vm.prank(STRANGER);
+            a.withdraw(USDC, 1e6);
+        }
+        assertEq(usdc(DEST), 105e6);
+        assertEq(usdc(FEES), 0);
+    }
+
+    /// Any other token pays no fee, whatever was signed: its units are not USDC's.
+    function test_anotherTokenPaysNoFee() public {
+        withAddress();
+        MockToken other = new MockToken();
+        other.mint(address(a), 100e18);
+        Withdrawal memory w = withdrawal(a, address(other), 50e18, 0);
+        a.withdrawSigned(w, 0, signWithdrawal(a, PASSKEY_A, w));
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(address(other), 50e18);
+        assertEq(other.balanceOf(DEST), 100e18);
+        assertEq(other.balanceOf(FEES), 0);
+    }
+
+    /// The native coin pays no fee either, on a chain with a pinned USDT and on one without, where
+    /// `conversionPool()` names the zero address as USDT (never the native coin's fee).
+    function test_theNativeCoinPaysNoFee() public {
+        withAddress();
+        vm.deal(address(a), 2 ether);
+        Withdrawal memory w = withdrawal(a, address(0), 1 ether, 0);
+        a.withdrawSigned(w, 0, signWithdrawal(a, PASSKEY_A, w));
+
+        vm.chainId(8453); // Base: no pinned USDT
+        (, address usdt,) = a.conversionPool();
+        assertEq(usdt, address(0));
+        deliverRecord(a, 9, DEST, two(wallet(WALLET_A), passkey(PASSKEY_A))); // a copy in sync
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(address(0), 1 ether);
+        assertEq(DEST.balance, 2 ether);
+        assertEq(FEES.balance, 0);
     }
 
     /// A passkey-only owner withdraws by signing, whatever the transfer key does.
@@ -243,99 +411,23 @@ contract MoneyTest is Helpers {
         withAddress();
         (uint256 nonce, uint256 deadline, bytes memory sig) = revokeSig(a, PASSKEY_A, true);
         a.revokeTransfer(nonce, deadline, sig);
-        Withdrawal memory w = withdrawal(a, USDC, 10e6, 0);
+        Withdrawal memory w = withdrawal(a, USDC, 10e6, 1e6);
         a.withdrawSigned(w, 0, signWithdrawal(a, PASSKEY_A, w));
-        assertEq(usdc(DEST), 10e6);
+        assertEq(usdc(DEST), 9e6);
     }
 
     function test_aSignedWithdrawalExpiresAndNamesItsChain() public {
         withAddress();
-        Withdrawal memory w = withdrawal(a, USDC, 10e6, 0);
+        Withdrawal memory w = withdrawal(a, USDC, 10e6, 1e6);
         bytes memory sig = signWithdrawal(a, WALLET_A, w);
         vm.chainId(1);
         deliverRecord(a, 1, DEST, two(wallet(WALLET_A), passkey(PASSKEY_A))); // a copy in sync
-        vm.expectRevert(DepositAccount.BadSignature.selector);
+        vm.expectRevert(DepositAccountState.BadSignature.selector);
         a.withdrawSigned(w, 0, sig);
         vm.chainId(42161);
         vm.warp(w.deadline + 1);
-        vm.expectRevert(DepositAccount.Expired.selector);
+        vm.expectRevert(DepositAccountState.Expired.selector);
         a.withdrawSigned(w, 0, sig);
-    }
-
-    // ── the compiled cap on the signed fee (amendment 2d, decision 73) ───────────────────────
-
-    /// A passkey signs `maxFee` blind: whatever it signed, the fee is at most 50 USDC.
-    function test_theSignedFeeIsCappedAt50Usdc() public {
-        withAddress();
-        assertEq(a.MAX_SIGNED_FEE(), 50e6);
-        Withdrawal memory w = withdrawal(a, USDC, 1_000e6, 1_000e6); // all of it, signed blind
-        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
-        vm.prank(STRANGER);
-        vm.expectRevert(DepositAccount.FeeAboveMax.selector);
-        a.withdrawSigned(w, 50e6 + 1, sig); // 50.000001 USDC
-        vm.prank(STRANGER);
-        a.withdrawSigned(w, 50e6, sig);
-        assertEq(usdc(FEES), 50e6);
-        assertEq(usdc(DEST), 950e6);
-    }
-
-    /// The chain's pinned USDT (Arbitrum's USD₮0), 6 decimals as USDC: the same cap.
-    function test_theCapHoldsForThePinnedUsdt() public {
-        withAddress();
-        Withdrawal memory w = withdrawal(a, USDT, 100e6, 100e6);
-        bytes memory sig = signWithdrawal(a, WALLET_A, w);
-        vm.expectRevert(DepositAccount.FeeAboveMax.selector);
-        a.withdrawSigned(w, 50e6 + 1, sig);
-        a.withdrawSigned(w, 50e6, sig);
-        assertEq(MockToken(USDT).balanceOf(FEES), 50e6);
-        assertEq(MockToken(USDT).balanceOf(DEST), 50e6);
-    }
-
-    /// Any other token pays no fee, whatever was signed: its units are not USDC's.
-    function test_aFeeOnAnotherTokenIsRefused() public {
-        withAddress();
-        MockToken other = new MockToken();
-        other.mint(address(a), 100e18);
-        Withdrawal memory w = withdrawal(a, address(other), 100e18, 1);
-        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
-        vm.expectRevert(DepositAccount.FeeAboveMax.selector);
-        a.withdrawSigned(w, 1, sig);
-        a.withdrawSigned(w, 0, sig);
-        assertEq(other.balanceOf(DEST), 100e18);
-        assertEq(other.balanceOf(FEES), 0);
-    }
-
-    /// The native coin pays no fee either, on a chain with a pinned USDT and on one without, where
-    /// `conversionPool()` names the zero address as USDT (never the native coin's cap).
-    function test_aFeeInTheNativeCoinIsRefused() public {
-        withAddress();
-        vm.deal(address(a), 2 ether);
-        Withdrawal memory w = withdrawal(a, address(0), 1 ether, 1);
-        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
-        vm.expectRevert(DepositAccount.FeeAboveMax.selector);
-        a.withdrawSigned(w, 1, sig);
-
-        vm.chainId(8453); // Base: no pinned USDT
-        (, address usdt,) = a.conversionPool();
-        assertEq(usdt, address(0));
-        deliverRecord(a, 9, DEST, two(wallet(WALLET_A), passkey(PASSKEY_A))); // a copy in sync
-        w = withdrawal(a, address(0), 1 ether, 1);
-        sig = signWithdrawal(a, PASSKEY_A, w);
-        vm.expectRevert(DepositAccount.FeeAboveMax.selector);
-        a.withdrawSigned(w, 1, sig);
-        a.withdrawSigned(w, 0, sig);
-        assertEq(DEST.balance, 1 ether);
-        assertEq(FEES.balance, 0);
-    }
-
-    /// The cap is the signed path's alone: a wallet credential's own withdrawal pays no fee, of any
-    /// size, and is unaffected.
-    function test_theWalletsWithdrawIsUnaffectedByTheCap() public {
-        withAddress();
-        vm.prank(vm.addr(WALLET_A));
-        a.withdraw(USDC, 1_000e6);
-        assertEq(usdc(DEST), 1_000e6);
-        assertEq(usdc(FEES), 0);
     }
 
     // ── conversion (§8.2, decision 30) ───────────────────────────────────────────────────────
@@ -352,7 +444,7 @@ contract MoneyTest is Helpers {
     function test_theMinimumOutIsRaisedToTheBound() public {
         MockPool(POOL).setRate(9_979); // 997.9 per 1,000: below 1 USD less 0.2%
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BelowMinimum.selector);
+        vm.expectRevert(DepositAccountState.BelowMinimum.selector);
         a.convertSwap(1_000e6, 0);
         MockPool(POOL).setRate(9_980); // exactly the floor, 998
         vm.prank(TRANSFER);
@@ -360,46 +452,46 @@ contract MoneyTest is Helpers {
         // a tighter minimum asked by the key is kept
         MockToken(USDT).mint(address(a), 1_000e6);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BelowMinimum.selector);
+        vm.expectRevert(DepositAccountState.BelowMinimum.selector);
         a.convertSwap(1_000e6, 998.5e6);
     }
 
     function test_thePoolIsPaidOnlyTheAmountInAndOnlyDuringTheSwap() public {
         MockPool(POOL).setOvercharge(1);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BadAmount.selector);
+        vm.expectRevert(DepositAccountState.BadAmount.selector);
         a.convertSwap(100e6, 0);
         vm.prank(POOL);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.uniswapV3SwapCallback(0, 100e6, "");
         vm.prank(STRANGER);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.uniswapV3SwapCallback(0, 100e6, "");
     }
 
     function test_conversionNeedsTheTransferKeyAndAPinnedPool() public {
         vm.prank(STRANGER);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.convertSwap(1e6, 0);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BadAmount.selector);
+        vm.expectRevert(DepositAccountState.BadAmount.selector);
         a.convertSwap(1, 0); // a floor of zero
         vm.chainId(8453); // Base: no USDT, no pool
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.ConversionUnavailable.selector);
+        vm.expectRevert(DepositAccountState.ConversionUnavailable.selector);
         a.convertSwap(1e6, 0);
         vm.chainId(10); // OP Mainnet: no pool holds liquidity (step 11e1 §15)
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.ConversionUnavailable.selector);
+        vm.expectRevert(DepositAccountState.ConversionUnavailable.selector);
         a.convertSwap(1e6, 0);
         vm.chainId(42161);
         (uint256 nonce, uint256 deadline, bytes memory sig) = revokeSig(a, PASSKEY_A, true);
         a.revokeTransfer(nonce, deadline, sig);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.convertSwap(1e6, 0);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.convertBurn(1e6, 0);
     }
 
@@ -434,7 +526,7 @@ contract MoneyTest is Helpers {
         assertEq(m.maxFee(), 0.1e6);
         m.setMinFee(true, 10_001); // above the cap
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BurnFeeTooHigh.selector);
+        vm.expectRevert(DepositAccountState.BurnFeeTooHigh.selector);
         a.convertBurn(100e6, 0);
         assertEq(usdc(address(a)), 500e6);
         m.setMinFee(false, 0); // no such function: 0
@@ -478,13 +570,13 @@ contract MoneyTest is Helpers {
         assertEq(pool, address(0));
         assertEq(usdt, address(0));
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.ConversionUnavailable.selector);
+        vm.expectRevert(DepositAccountState.ConversionUnavailable.selector);
         a.convertSwap(1e6, 0);
 
         vm.etch(avaxUsdc, address(new MockToken()).code);
         MockToken(avaxUsdc).mint(address(a), 300e6);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BadDomain.selector); // its own
+        vm.expectRevert(DepositAccountState.BadDomain.selector); // its own
         a.convertBurn(100e6, 1);
         vm.prank(TRANSFER);
         a.convertBurn(100e6, 3);
@@ -494,26 +586,23 @@ contract MoneyTest is Helpers {
         assertEq(m.mintRecipient(), bytes32(uint256(uint160(address(a)))));
         assertEq(MockToken(avaxUsdc).balanceOf(address(a)), 200e6);
 
-        // a signed withdrawal of Avalanche's USDC pays at most MAX_SIGNED_FEE (decision 73)
+        // a signed withdrawal of Avalanche's USDC pays the flat fee (amendment E)
         deliverRecord(a, 9, DEST, two(wallet(WALLET_A), passkey(PASSKEY_A))); // a copy in sync
-        Withdrawal memory w = withdrawal(a, avaxUsdc, 200e6, 51e6);
-        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
-        vm.expectRevert(DepositAccount.FeeAboveMax.selector);
-        a.withdrawSigned(w, 51e6, sig);
-        a.withdrawSigned(w, 50e6, sig);
-        assertEq(MockToken(avaxUsdc).balanceOf(FEES), 50e6);
-        assertEq(MockToken(avaxUsdc).balanceOf(DEST), 150e6);
+        Withdrawal memory w = withdrawal(a, avaxUsdc, 200e6, 1e6);
+        a.withdrawSigned(w, 0, signWithdrawal(a, PASSKEY_A, w));
+        assertEq(MockToken(avaxUsdc).balanceOf(FEES), 1e6);
+        assertEq(MockToken(avaxUsdc).balanceOf(DEST), 199e6);
     }
 
     function test_aBurnToItsOwnOrANonDepositDomainIsRefused() public {
         uint32[4] memory bad = [uint32(3), 5, 4, 17]; // its own; Solana, Noble, BNB Smart Chain (USYC only)
         for (uint256 i; i < bad.length; ++i) {
             vm.prank(TRANSFER);
-            vm.expectRevert(DepositAccount.BadDomain.selector);
+            vm.expectRevert(DepositAccountState.BadDomain.selector);
             a.convertBurn(1e6, bad[i]);
         }
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BadAmount.selector);
+        vm.expectRevert(DepositAccountState.BadAmount.selector);
         a.convertBurn(0, 0);
     }
 }

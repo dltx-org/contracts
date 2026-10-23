@@ -1,0 +1,11 @@
+{
+  "name": "@contracts/strategy-vault-v1",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Version 1 of the strategy vaults (owner-upgradeable members on the shared proxy, asset profiles), its registry and its factory (Foundry). Its own project so that version 0's pinned build (contracts/strategy-vault) compiles exactly as deployed. Unit tests always run; fork tests run with the RPC urls and skip otherwise.",
+  "scripts": {
+    "build": "forge build",
+    "test": "node test.mjs"
+  }
+}

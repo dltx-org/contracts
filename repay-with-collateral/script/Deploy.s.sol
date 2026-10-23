@@ -11,7 +11,7 @@ import {IPool, ISwapRouter02, RepayWithCollateral} from "../src/RepayWithCollate
  *   POOL=0x794a61358D6845594F94dc1DB02A252b5b4814aD ROUTER=0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45 \
  *   forge script script/Deploy.s.sol --rpc-url arbitrum --broadcast --verify --private-key $DEPLOYER_KEY
  *
- * Pin the address in apps/api/src/modules/strategy-execution/venues/lending/aave-v3/constants.ts
+ * Pin the address in apps/api-v1/src/modules/strategy-execution/venues/lending/aave-v3/constants.ts
  * (`REPAY_WITH_COLLATERAL`, keyed by pool) with `trustedForDerisk: false` until the pool's first funded run.
  */
 contract Deploy is Script {

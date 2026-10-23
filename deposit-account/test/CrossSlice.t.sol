@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {Vm} from "forge-std/Test.sol";
 import {Credential, DepositAccount} from "../src/DepositAccount.sol";
+import {DepositAccountState} from "../src/DepositAccountState.sol";
 import {DepositFactory} from "../src/DepositFactory.sol";
 import {FixtureVaultFactory, Helpers} from "./Helpers.sol";
 import {IStrategyVaultFactory, PairConfig, StrategyVaultFixture} from "./fixtures/StrategyVault.sol";
@@ -74,6 +75,33 @@ contract CrossSliceTest is Helpers {
         return signPasskey(PASSKEY_A, a.hashTypedData(structHash));
     }
 
+    /// DepositAccount's PINNED_VAULT_FACTORY: the vault build's version-1 combination factory, at its
+    /// deterministic address (not deployed yet: the account's trust names an address, not code).
+    address constant PINNED = 0xF6989dDcf67CcbC1077C9054D62F8A1363623d1d;
+
+    /// deposit-first-deposit-design.md (D1, D2, D3) on an Arbitrum fork: USDC waits at the account's
+    /// address before any deployment, the account is deployed at the deposit, the owner's first
+    /// address is in effect at once, and an authorisation naming the REAL pinned combination factory is
+    /// trusted and applied in the same call. Creating a vault through that factory and funding it is the
+    /// redeploy's fork rehearsal (the spec's §7), with the whole version-1 set.
+    function test_arbitrum_aStrategyCanStartRightAfterTheFirstDeposit() public {
+        if (!fork("ARBITRUM_RPC_URL")) return vm.skip(true);
+        DepositFactory f = deployFactory();
+        vm.prank(RECOVERY);
+        f.setTransferKey(TRANSFER);
+        address predicted = f.addressOf(ALICE, owners());
+        assertEq(predicted.code.length, 0);
+        deal(ARB_USDC, predicted, 100e6); // the first deposit, before any deployment
+        DepositAccount a = DepositAccount(f.deploy(ALICE, owners()));
+        assertEq(address(a), predicted);
+        assertEq(IToken(ARB_USDC).balanceOf(address(a)), 100e6, "the money waited at the address");
+        setWithdrawal(a, PASSKEY_A, DEST);
+        assertEq(a.withdrawalAddress(), DEST, "the first address, at once");
+        authorise(a, PASSKEY_A, PINNED, 3, STRATEGY, keccak256("a configuration"), 100e6);
+        assertTrue(a.isTrusted(PINNED, 3), "the pinned factory, at once");
+        assertEq(a.allowanceOf(PINNED, STRATEGY, keccak256("a configuration")), 100e6, "applied in the same call");
+    }
+
     function test_arbitrum_slice2sRealFactoryCreatesAndTheAccountFunds() public {
         if (!fork("ARBITRUM_RPC_URL")) return vm.skip(true);
         (, DepositAccount a) = home();
@@ -86,7 +114,7 @@ contract CrossSliceTest is Helpers {
         uint256 badId = authorise(a, PASSKEY_A, address(vf), 3, STRATEGY, badHash, 500e6);
         deal(ARB_USDC, address(a), 600e6);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.fund(address(vf), vault, 500e6); // the factory's first 24 hours
         vm.warp(dueOf(a, address(vf), 3));
         a.applyAuthorisation(id);
@@ -96,7 +124,7 @@ contract CrossSliceTest is Helpers {
         assertEq(IToken(ARB_USDC).balanceOf(vault), 500e6, "the real vault funded");
         assertEq(badVault.code.length, 0);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotOwnVault.selector);
+        vm.expectRevert(DepositAccountState.NotOwnVault.selector);
         a.fund(address(vf), badVault, 1e6);
     }
 
@@ -156,7 +184,7 @@ contract CrossSliceTest is Helpers {
         a.dispatchAuthorisation(id);
         bytes memory auth = sentBody(vm.getRecordedLogs());
         vm.recordLogs();
-        a.publish(0);
+        rec(a).publish(0);
         bytes memory record = sentBody(vm.getRecordedLogs());
         // the money: a real CCTP burn to the user's own address on Ethereum
         deal(ARB_USDC, address(a), 300e6);
@@ -172,10 +200,10 @@ contract CrossSliceTest is Helpers {
         assertEq(address(ethFactory), fixture);
         bytes32 self = bytes32(uint256(uint160(address(copy))));
         vm.prank(MT);
-        copy.handleReceiveFinalizedMessage(3, self, 2000, record);
+        rec(copy).handleReceiveFinalizedMessage(3, self, 2000, record);
         assertTrue(copy.synced());
         vm.prank(MT);
-        copy.handleReceiveFinalizedMessage(3, self, 2000, auth);
+        rec(copy).handleReceiveFinalizedMessage(3, self, 2000, auth);
         assertTrue(copy.isTrusted(fixture, 0));
         assertEq(copy.allowanceOf(fixture, STRATEGY, config), 300e6);
         deal(ETH_USDC, address(copy), 300e6); // Circle's mint lands at the user's own address
@@ -185,7 +213,7 @@ contract CrossSliceTest is Helpers {
         assertEq(IToken(ETH_USDC).balanceOf(vault), 300e6);
         // a redispatch adds nothing
         vm.prank(MT);
-        copy.handleReceiveFinalizedMessage(3, self, 2000, auth);
+        rec(copy).handleReceiveFinalizedMessage(3, self, 2000, auth);
         assertEq(copy.allowanceOf(fixture, STRATEGY, config), 0);
     }
 }

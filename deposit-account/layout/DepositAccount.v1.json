@@ -1,0 +1,431 @@
+[
+  {
+    "label": "_initialised",
+    "slot": "0",
+    "offset": 0,
+    "type": "t_bool",
+    "encoding": "inplace",
+    "bytes": "1"
+  },
+  {
+    "label": "_entered",
+    "slot": "0",
+    "offset": 1,
+    "type": "t_bool",
+    "encoding": "inplace",
+    "bytes": "1"
+  },
+  {
+    "label": "_synced",
+    "slot": "0",
+    "offset": 2,
+    "type": "t_bool",
+    "encoding": "inplace",
+    "bytes": "1"
+  },
+  {
+    "label": "transferRevoked",
+    "slot": "0",
+    "offset": 3,
+    "type": "t_bool",
+    "encoding": "inplace",
+    "bytes": "1"
+  },
+  {
+    "label": "_version",
+    "slot": "0",
+    "offset": 4,
+    "type": "t_uint64",
+    "encoding": "inplace",
+    "bytes": "8"
+  },
+  {
+    "label": "_deployedAt",
+    "slot": "0",
+    "offset": 12,
+    "type": "t_uint64",
+    "encoding": "inplace",
+    "bytes": "8"
+  },
+  {
+    "label": "_pendingWithdrawalDue",
+    "slot": "0",
+    "offset": 20,
+    "type": "t_uint64",
+    "encoding": "inplace",
+    "bytes": "8"
+  },
+  {
+    "label": "recordPublishedAt",
+    "slot": "1",
+    "offset": 0,
+    "type": "t_uint64",
+    "encoding": "inplace",
+    "bytes": "8"
+  },
+  {
+    "label": "_burnDay",
+    "slot": "2",
+    "offset": 0,
+    "type": "t_uint256",
+    "encoding": "inplace",
+    "bytes": "32"
+  },
+  {
+    "label": "_burnCap",
+    "slot": "3",
+    "offset": 0,
+    "type": "t_uint256",
+    "encoding": "inplace",
+    "bytes": "32"
+  },
+  {
+    "label": "_burnPaid",
+    "slot": "4",
+    "offset": 0,
+    "type": "t_uint256",
+    "encoding": "inplace",
+    "bytes": "32"
+  },
+  {
+    "label": "_withdrawal",
+    "slot": "5",
+    "offset": 0,
+    "type": "t_address",
+    "encoding": "inplace",
+    "bytes": "20"
+  },
+  {
+    "label": "_pendingWithdrawal",
+    "slot": "6",
+    "offset": 0,
+    "type": "t_address",
+    "encoding": "inplace",
+    "bytes": "20"
+  },
+  {
+    "label": "_swapIn",
+    "slot": "7",
+    "offset": 0,
+    "type": "t_uint256",
+    "encoding": "inplace",
+    "bytes": "32"
+  },
+  {
+    "label": "_creds",
+    "slot": "8",
+    "offset": 0,
+    "type": "t_array(t_struct(Credential)_storage)dyn_storage",
+    "encoding": "dynamic_array",
+    "bytes": "32",
+    "base": {
+      "type": "t_struct(Credential)_storage",
+      "encoding": "inplace",
+      "bytes": "96",
+      "members": [
+        {
+          "label": "kind",
+          "slot": "0",
+          "offset": 0,
+          "type": "t_uint8",
+          "encoding": "inplace",
+          "bytes": "1"
+        },
+        {
+          "label": "x",
+          "slot": "1",
+          "offset": 0,
+          "type": "t_bytes32",
+          "encoding": "inplace",
+          "bytes": "32"
+        },
+        {
+          "label": "y",
+          "slot": "2",
+          "offset": 0,
+          "type": "t_bytes32",
+          "encoding": "inplace",
+          "bytes": "32"
+        }
+      ]
+    }
+  },
+  {
+    "label": "_removalDue",
+    "slot": "9",
+    "offset": 0,
+    "type": "t_mapping(t_bytes32,t_uint256)",
+    "encoding": "mapping",
+    "bytes": "32",
+    "key": {
+      "type": "t_bytes32",
+      "encoding": "inplace",
+      "bytes": "32"
+    },
+    "value": {
+      "type": "t_uint256",
+      "encoding": "inplace",
+      "bytes": "32"
+    }
+  },
+  {
+    "label": "_removalBy",
+    "slot": "10",
+    "offset": 0,
+    "type": "t_mapping(t_bytes32,t_bytes32)",
+    "encoding": "mapping",
+    "bytes": "32",
+    "key": {
+      "type": "t_bytes32",
+      "encoding": "inplace",
+      "bytes": "32"
+    },
+    "value": {
+      "type": "t_bytes32",
+      "encoding": "inplace",
+      "bytes": "32"
+    }
+  },
+  {
+    "label": "_recordNonce",
+    "slot": "11",
+    "offset": 0,
+    "type": "t_mapping(t_bytes32,t_uint256)",
+    "encoding": "mapping",
+    "bytes": "32",
+    "key": {
+      "type": "t_bytes32",
+      "encoding": "inplace",
+      "bytes": "32"
+    },
+    "value": {
+      "type": "t_uint256",
+      "encoding": "inplace",
+      "bytes": "32"
+    }
+  },
+  {
+    "label": "_localNonce",
+    "slot": "12",
+    "offset": 0,
+    "type": "t_mapping(t_bytes32,t_uint256)",
+    "encoding": "mapping",
+    "bytes": "32",
+    "key": {
+      "type": "t_bytes32",
+      "encoding": "inplace",
+      "bytes": "32"
+    },
+    "value": {
+      "type": "t_uint256",
+      "encoding": "inplace",
+      "bytes": "32"
+    }
+  },
+  {
+    "label": "_addDue",
+    "slot": "13",
+    "offset": 0,
+    "type": "t_mapping(t_bytes32,t_uint256)",
+    "encoding": "mapping",
+    "bytes": "32",
+    "key": {
+      "type": "t_bytes32",
+      "encoding": "inplace",
+      "bytes": "32"
+    },
+    "value": {
+      "type": "t_uint256",
+      "encoding": "inplace",
+      "bytes": "32"
+    }
+  },
+  {
+    "label": "allowance",
+    "slot": "14",
+    "offset": 0,
+    "type": "t_mapping(t_bytes32,t_uint256)",
+    "encoding": "mapping",
+    "bytes": "32",
+    "key": {
+      "type": "t_bytes32",
+      "encoding": "inplace",
+      "bytes": "32"
+    },
+    "value": {
+      "type": "t_uint256",
+      "encoding": "inplace",
+      "bytes": "32"
+    }
+  },
+  {
+    "label": "_trust",
+    "slot": "15",
+    "offset": 0,
+    "type": "t_mapping(t_bytes32,t_struct(Trust)_storage)",
+    "encoding": "mapping",
+    "bytes": "32",
+    "key": {
+      "type": "t_bytes32",
+      "encoding": "inplace",
+      "bytes": "32"
+    },
+    "value": {
+      "type": "t_struct(Trust)_storage",
+      "encoding": "inplace",
+      "bytes": "32",
+      "members": [
+        {
+          "label": "due",
+          "slot": "0",
+          "offset": 0,
+          "type": "t_uint64",
+          "encoding": "inplace",
+          "bytes": "8"
+        },
+        {
+          "label": "epoch",
+          "slot": "0",
+          "offset": 8,
+          "type": "t_uint64",
+          "encoding": "inplace",
+          "bytes": "8"
+        }
+      ]
+    }
+  },
+  {
+    "label": "_grants",
+    "slot": "16",
+    "offset": 0,
+    "type": "t_mapping(t_uint256,t_struct(Grant)_storage)",
+    "encoding": "mapping",
+    "bytes": "32",
+    "key": {
+      "type": "t_uint256",
+      "encoding": "inplace",
+      "bytes": "32"
+    },
+    "value": {
+      "type": "t_struct(Grant)_storage",
+      "encoding": "inplace",
+      "bytes": "160",
+      "members": [
+        {
+          "label": "vaultFactory",
+          "slot": "0",
+          "offset": 0,
+          "type": "t_address",
+          "encoding": "inplace",
+          "bytes": "20"
+        },
+        {
+          "label": "domain",
+          "slot": "0",
+          "offset": 20,
+          "type": "t_uint32",
+          "encoding": "inplace",
+          "bytes": "4"
+        },
+        {
+          "label": "applied",
+          "slot": "0",
+          "offset": 24,
+          "type": "t_bool",
+          "encoding": "inplace",
+          "bytes": "1"
+        },
+        {
+          "label": "strategyId",
+          "slot": "1",
+          "offset": 0,
+          "type": "t_bytes32",
+          "encoding": "inplace",
+          "bytes": "32"
+        },
+        {
+          "label": "configHash",
+          "slot": "2",
+          "offset": 0,
+          "type": "t_bytes32",
+          "encoding": "inplace",
+          "bytes": "32"
+        },
+        {
+          "label": "allowance",
+          "slot": "3",
+          "offset": 0,
+          "type": "t_uint256",
+          "encoding": "inplace",
+          "bytes": "32"
+        },
+        {
+          "label": "trustEpoch",
+          "slot": "4",
+          "offset": 0,
+          "type": "t_uint64",
+          "encoding": "inplace",
+          "bytes": "8"
+        }
+      ]
+    }
+  },
+  {
+    "label": "authorisationCount",
+    "slot": "17",
+    "offset": 0,
+    "type": "t_uint256",
+    "encoding": "inplace",
+    "bytes": "32"
+  },
+  {
+    "label": "authorisationApplied",
+    "slot": "18",
+    "offset": 0,
+    "type": "t_mapping(t_uint256,t_bool)",
+    "encoding": "mapping",
+    "bytes": "32",
+    "key": {
+      "type": "t_uint256",
+      "encoding": "inplace",
+      "bytes": "32"
+    },
+    "value": {
+      "type": "t_bool",
+      "encoding": "inplace",
+      "bytes": "1"
+    }
+  },
+  {
+    "label": "_upgradeTo",
+    "slot": "19",
+    "offset": 0,
+    "type": "t_address",
+    "encoding": "inplace",
+    "bytes": "20"
+  },
+  {
+    "label": "_upgradeDue",
+    "slot": "19",
+    "offset": 20,
+    "type": "t_uint64",
+    "encoding": "inplace",
+    "bytes": "8"
+  },
+  {
+    "label": "_upgradeBy",
+    "slot": "20",
+    "offset": 0,
+    "type": "t_bytes32",
+    "encoding": "inplace",
+    "bytes": "32"
+  },
+  {
+    "label": "_upgradePublishedAt",
+    "slot": "21",
+    "offset": 0,
+    "type": "t_uint64",
+    "encoding": "inplace",
+    "bytes": "8"
+  }
+]

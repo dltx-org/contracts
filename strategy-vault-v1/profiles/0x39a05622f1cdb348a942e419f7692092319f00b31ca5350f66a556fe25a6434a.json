@@ -1,0 +1,52 @@
+{
+  "$comment": "The ETH asset profile on version 1 (asset-profiles-design.md Q7): version 0's leg as data. Its id is keccak256(abi.encode(profile)) (src/Types.sol AssetProfile), pinned in test/OwnerDigestsV1.t.sol. AP-3's checks pass against Arbitrum at blocks 514,790,000 and 517,200,797 (test/AssetLegEth.fork.t.sol, AssetLegBtc.fork.t.sol). Constructor data of the registry (the genesis): the release review (AP-12: each feed's provenance in Chainlink's directory, the collateral's tie to its perp) must be done BEFORE the registry is deployed, since it opens the profile at once.",
+  "id": "0x39a05622f1cdb348a942e419f7692092319f00b31ca5350f66a556fe25a6434a",
+  "fields": [
+    ["asset", "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1", "WETH on Arbitrum One"],
+    ["assetDecimals", 18, "WETH.decimals()"],
+    [
+      "aAsset",
+      "0xe50fA9b3c56FfB159cB0FCA61F5c9D750e8128c8",
+      "AAVE Pool.getReserveData(WETH).aTokenAddress"
+    ],
+    [
+      "swapPool",
+      "0xC6962004f452bE9203591991D15f6b388e09E8D0",
+      "getPool(WETH, USDC, 500) of the receiver's router's factory"
+    ],
+    ["swapFee", 500, "version 0's tier"],
+    ["assetIsToken0", true, "WETH 0x82aF… < USDC 0xaf88…"],
+    ["holdingAsset", "keccak256(\"dltx.asset.ETH\")", "Assets.ETH: WETH is ETH (no rate feed)"],
+    ["minBoundBp", 30, "version 0's MIN_BOUND_BP"],
+    ["rateFeed", "0x0000000000000000000000000000000000000000", "none"],
+    ["rateDescription", "", "none"],
+    ["rateMaxAge", 0, "none"],
+    ["perp", 1, "Hyperliquid DEX 0 index of ETH"],
+    ["perpCoin", "ETH", "perpAssetInfo(1).coin"],
+    ["szDecimals", 4, "perpAssetInfo(1).szDecimals"],
+    ["underlying", "ETH", "WETH is ETH"],
+    ["shortAsset", "keccak256(\"dltx.asset.ETH\")", "derived: Assets.ETH"],
+    [
+      "pins[0]",
+      {
+        "asset": "Assets.ETH",
+        "kind": 1,
+        "feed": "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612",
+        "baseFeed": "0x0000000000000000000000000000000000000000",
+        "maxAge": 3600
+      },
+      "version 0's FeePins.ETH_USD"
+    ],
+    [
+      "pins[1]",
+      {
+        "asset": "0x0",
+        "kind": 0,
+        "feed": "0x0000000000000000000000000000000000000000",
+        "baseFeed": "0x0000000000000000000000000000000000000000",
+        "maxAge": 0
+      },
+      "unused"
+    ]
+  ]
+}

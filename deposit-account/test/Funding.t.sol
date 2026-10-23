@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: LicenseRef-DLTX-Source-1.0
 pragma solidity 0.8.37;
 
-import {DepositAccount, StrategyGrant} from "../src/DepositAccount.sol";
+import {DepositAccount, StrategyGrant, Withdrawal} from "../src/DepositAccount.sol";
+import {DepositAccountState} from "../src/DepositAccountState.sol";
 import {DepositFactory} from "../src/DepositFactory.sol";
 import {FixtureVaultFactory, Helpers, MockToken, MockTokenMessenger, MockTransmitter} from "./Helpers.sol";
 
@@ -23,6 +24,8 @@ contract FundingTest is Helpers {
     address constant TM = 0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d;
     bytes32 constant STRATEGY = keccak256("strategy A");
     bytes32 constant CONFIG = keccak256("strategy A's configuration");
+    /// DepositAccount's PINNED_VAULT_FACTORY (deposit-first-deposit-design.md, D2).
+    address constant PINNED = 0xF6989dDcf67CcbC1077C9054D62F8A1363623d1d;
 
     DepositFactory f;
     DepositAccount a;
@@ -30,7 +33,7 @@ contract FundingTest is Helpers {
     MockTransmitter mt;
     uint256 ready; // a snapshot: the home set up, nothing authorised
 
-    function setUp() public {
+    function setUp() public virtual {
         vm.chainId(42161);
         f = deployFactory();
         vm.prank(RECOVERY);
@@ -47,7 +50,7 @@ contract FundingTest is Helpers {
         MockToken(ARB_USDC).mint(address(a), 1_000e6);
         setWithdrawalNow(a, PASSKEY_A, DEST);
         vm.prank(TRANSFER);
-        f.checkIn();
+        f.checkIn(supported());
         ready = vm.snapshotState();
     }
 
@@ -74,9 +77,9 @@ contract FundingTest is Helpers {
         assertEq(a.allowanceOf(address(vf), STRATEGY, CONFIG), 0, "nothing applies while pending");
         address vault = vf.create(STRATEGY, address(a), CONFIG);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.fund(address(vf), vault, 1e6);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.applyAuthorisation(id);
         vm.warp(due - 1);
         assertFalse(a.isTrusted(address(vf), 3));
@@ -85,7 +88,7 @@ contract FundingTest is Helpers {
         vm.prank(STRANGER); // anyone applies it
         a.applyAuthorisation(id);
         assertEq(a.allowanceOf(address(vf), STRATEGY, CONFIG), 300e6);
-        vm.expectRevert(DepositAccount.AlreadyApplied.selector);
+        vm.expectRevert(DepositAccountState.AlreadyApplied.selector);
         a.applyAuthorisation(id);
         vm.prank(TRANSFER);
         a.fund(address(vf), vault, 300e6);
@@ -118,14 +121,14 @@ contract FundingTest is Helpers {
         assertEq(dueOf(a, address(vf), 3), 0);
         vm.warp(due + 1);
         assertFalse(a.isTrusted(address(vf), 3));
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.applyAuthorisation(id);
-        vm.expectRevert(DepositAccount.NothingPending.selector);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
         this.cancelT(PASSKEY_A, due); // a replay cancels nothing
         // trusted later on purpose: the cancelled grant stays void, only the new one applies
         uint256 id2 = authorise(a, PASSKEY_A, address(vf), 3, STRATEGY, CONFIG, 10e6);
         vm.warp(dueOf(a, address(vf), 3));
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.applyAuthorisation(id);
         a.applyAuthorisation(id2);
         assertEq(a.allowanceOf(address(vf), STRATEGY, CONFIG), 10e6);
@@ -139,29 +142,29 @@ contract FundingTest is Helpers {
         authorise(a, PASSKEY_A, address(vf), 3, STRATEGY, CONFIG, 1e6);
         uint256 due = dueOf(a, address(vf), 3);
         vm.warp(due);
-        vm.expectRevert(DepositAccount.NothingPending.selector);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
         this.cancelT(PASSKEY_A, due);
         assertTrue(a.isTrusted(address(vf), 3));
     }
 
     function test_anAuthorisationIsTheHomesLocalAction() public {
         (StrategyGrant memory g, bytes memory sig) = grantSig(a, WALLET_B, address(vf), 3, STRATEGY, CONFIG, 1e6);
-        vm.expectRevert(DepositAccount.BadSignature.selector);
+        vm.expectRevert(DepositAccountState.BadSignature.selector);
         a.authoriseStrategy(g, sig);
         (g, sig) = grantSig(a, PASSKEY_A, address(vf), 5, STRATEGY, CONFIG, 1e6);
-        vm.expectRevert(DepositAccount.BadDomain.selector); // Solana: not a deposit chain
+        vm.expectRevert(DepositAccountState.BadDomain.selector); // Solana: not a deposit chain
         a.authoriseStrategy(g, sig);
         (g, sig) = grantSig(a, PASSKEY_A, address(vf), 3, STRATEGY, CONFIG, 0);
-        vm.expectRevert(DepositAccount.BadAmount.selector);
+        vm.expectRevert(DepositAccountState.BadAmount.selector);
         a.authoriseStrategy(g, sig);
         (g, sig) = grantSig(a, PASSKEY_A, address(vf), 3, STRATEGY, CONFIG, 1e6);
         a.authoriseStrategy(g, sig);
-        vm.expectRevert(DepositAccount.BadNonce.selector);
+        vm.expectRevert(DepositAccountState.BadNonce.selector);
         a.authoriseStrategy(g, sig);
         vm.chainId(1);
         deliverRecord(a, 1, DEST, two(wallet(WALLET_A), passkey(PASSKEY_A)));
         (g, sig) = grantSig(a, PASSKEY_A, address(vf), 0, STRATEGY, CONFIG, 1e6);
-        vm.expectRevert(DepositAccount.NotHome.selector);
+        vm.expectRevert(DepositAccountState.NotHome.selector);
         a.authoriseStrategy(g, sig);
     }
 
@@ -178,9 +181,9 @@ contract FundingTest is Helpers {
         assertEq(dueOf(a, address(vf), 3), vm.getBlockTimestamp() + 24 hours, "its own first 24 hours");
         address vault = vf.create(STRATEGY, address(a), CONFIG);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.fund(address(vf), vault, 1e6);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.applyAuthorisation(id);
         vm.warp(dueOf(a, address(vf), 3));
         a.applyAuthorisation(id);
@@ -203,9 +206,9 @@ contract FundingTest is Helpers {
         assertEq(due2, due, "the same second, the same due time");
         assertEq(epoch2, epoch + 1, "a new epoch");
         vm.warp(due);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.applyAuthorisation(old);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.dispatchAuthorisation(oldEth);
         a.applyAuthorisation(fresh);
         a.dispatchAuthorisation(freshEth);
@@ -218,7 +221,7 @@ contract FundingTest is Helpers {
         uint256 max = a.MAX_GRANT();
         assertEq(max, type(uint128).max);
         (StrategyGrant memory g, bytes memory sig) = grantSig(a, PASSKEY_A, address(vf), 0, STRATEGY, CONFIG, max + 1);
-        vm.expectRevert(DepositAccount.BadAmount.selector);
+        vm.expectRevert(DepositAccountState.BadAmount.selector);
         a.authoriseStrategy(g, sig);
         authorise(a, PASSKEY_A, address(vf), 0, STRATEGY, CONFIG, max);
 
@@ -238,26 +241,26 @@ contract FundingTest is Helpers {
         FixtureVaultFactory untrusted = new FixtureVaultFactory();
         address other = untrusted.create(STRATEGY, address(a), CONFIG);
         vm.startPrank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.fund(address(untrusted), other, 1e6); // a factory the owner never trusted
         vf.register(DEST2, address(a), STRATEGY, CONFIG);
-        vm.expectRevert(DepositAccount.NotOwnVault.selector);
+        vm.expectRevert(DepositAccountState.NotOwnVault.selector);
         a.fund(address(vf), DEST2, 1e6); // an address with no code
-        vm.expectRevert(DepositAccount.NotOwnVault.selector);
+        vm.expectRevert(DepositAccountState.NotOwnVault.selector);
         a.fund(address(vf), other, 1e6); // a vault this factory didn't create
         address theirs = vf.create(STRATEGY, address(0xA11CE5), CONFIG);
-        vm.expectRevert(DepositAccount.NotOwnVault.selector);
+        vm.expectRevert(DepositAccountState.NotOwnVault.selector);
         a.fund(address(vf), theirs, 1e6); // registered to another owner
-        vm.expectRevert(DepositAccount.AllowanceExceeded.selector);
+        vm.expectRevert(DepositAccountState.AllowanceExceeded.selector);
         a.fund(address(vf), vault, 100e6 + 1);
         vm.stopPrank();
         vm.prank(vm.addr(WALLET_A));
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.fund(address(vf), vault, 1e6);
         (uint256 nonce, uint256 deadline, bytes memory sig) = revokeSig(a, PASSKEY_A, true);
         a.revokeTransfer(nonce, deadline, sig);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.fund(address(vf), vault, 1e6);
         assertEq(usdc(ARB_USDC, address(a)), 1_000e6);
     }
@@ -271,16 +274,81 @@ contract FundingTest is Helpers {
         b.applyAuthorisation(id);
         address vault = vf.create(STRATEGY, address(b), CONFIG);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NoWithdrawalAddress.selector);
+        vm.expectRevert(DepositAccountState.NoWithdrawalAddress.selector);
         b.fund(address(vf), vault, 10e6);
-        setWithdrawal(b, PASSKEY_A, DEST);
+        setWithdrawal(b, PASSKEY_A, DEST); // the first address: in effect at once (D1)
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NoWithdrawalAddress.selector); // the first address still pending
-        b.fund(address(vf), vault, 10e6);
-        vm.warp(vm.getBlockTimestamp() + 24 hours);
-        vm.prank(TRANSFER);
-        b.fund(address(vf), vault, 10e6);
+        b.fund(address(vf), vault, 10e6); // the same block
         assertEq(usdc(ARB_USDC, vault), 10e6);
+    }
+
+    // ── the pinned factory (deposit-first-deposit-design.md, D2) ─────────────────────────────────
+
+    /// A fresh account: its first address, the pinned factory's first authorisation applied in the same
+    /// call, the vault funded at once: a strategy starts right after the first deposit.
+    function test_thePinnedFactoryIsTrustedAtOnceOnArbitrum() public {
+        vm.etch(PINNED, address(new FixtureVaultFactory()).code);
+        DepositAccount b = DepositAccount(f.deploy(bytes32(uint256(ALICE) + 1), one(passkey(PASSKEY_A))));
+        MockToken(ARB_USDC).mint(address(b), 10e6);
+        setWithdrawal(b, PASSKEY_A, DEST);
+        vm.expectEmit(address(b));
+        emit DepositAccountState.TrustProposed(PINNED, 3, vm.getBlockTimestamp(), 1);
+        authorise(b, PASSKEY_A, PINNED, 3, STRATEGY, CONFIG, 10e6);
+        assertTrue(b.isTrusted(PINNED, 3));
+        assertEq(b.allowanceOf(PINNED, STRATEGY, CONFIG), 10e6, "applied in the same call");
+        address vault = FixtureVaultFactory(PINNED).create(STRATEGY, address(b), CONFIG);
+        vm.prank(TRANSFER);
+        b.fund(PINNED, vault, 10e6);
+        assertEq(usdc(ARB_USDC, vault), 10e6);
+    }
+
+    /// Never pending, so never cancellable: permanent from its first authorisation.
+    function test_thePinnedTrustCannotBeCancelled() public {
+        authorise(a, PASSKEY_A, PINNED, 3, STRATEGY, CONFIG, 1e6);
+        uint256 due = dueOf(a, PINNED, 3);
+        assertEq(due, vm.getBlockTimestamp());
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
+        this.cancelT(PASSKEY_A, PINNED, 3, due);
+    }
+
+    function cancelT(uint256 signer, address factory, uint32 domain, uint256 due) external {
+        cancelTrust(a, signer, factory, domain, due);
+    }
+
+    /// HyperEVM's domain too: its grant is dispatchable at once.
+    function test_thePinnedFactoryIsTrustedAtOnceForHyperEvm() public {
+        uint256 id = authorise(a, PASSKEY_A, PINNED, 19, STRATEGY, CONFIG, 1e6);
+        assertTrue(a.isTrusted(PINNED, 19));
+        uint256 sent = mt.sent();
+        vm.expectEmit(address(a));
+        emit DepositAccountState.AuthorisationDispatched(id, 19);
+        a.dispatchAuthorisation(id);
+        assertEq(mt.sent(), sent + 1);
+        assertEq(mt.lastDomain(), 19);
+        assertEq(mt.body(), abi.encode(a.AUTH_TAG(), id, PINNED, STRATEGY, CONFIG, uint256(1e6)));
+    }
+
+    /// The same address on any other deposit chain waits 24 hours: anyone may deploy the factory's code
+    /// there, where its pins name nothing (round 2).
+    function test_thePinnedAddressWaits24HoursOnEveryOtherDomain() public {
+        uint32[5] memory others = [uint32(0), 1, 2, 6, 7];
+        for (uint256 i; i < others.length; ++i) {
+            authorise(a, PASSKEY_A, PINNED, others[i], STRATEGY, CONFIG, 1e6);
+            assertEq(dueOf(a, PINNED, others[i]), vm.getBlockTimestamp() + 24 hours);
+            assertFalse(a.isTrusted(PINNED, others[i]));
+        }
+    }
+
+    /// Residual R2 (§4.2), documented: a passkey in effect when the first address lands takes the money
+    /// at once by a signed withdrawal (here with no fee recipient, so no fee), no wallet needed.
+    function test_residual_aPasskeyTakesTheMoneyRightAfterTheFirstAddress() public {
+        DepositAccount b = DepositAccount(f.deploy(bytes32(uint256(ALICE) + 2), one(passkey(PASSKEY_A))));
+        MockToken(ARB_USDC).mint(address(b), 10e6);
+        setWithdrawal(b, PASSKEY_A, DEST2);
+        Withdrawal memory w = withdrawal(b, ARB_USDC, 10e6, 1e6);
+        bytes memory sig = signWithdrawal(b, PASSKEY_A, w);
+        b.withdrawSigned(w, 0, sig);
+        assertEq(usdc(ARB_USDC, DEST2), 10e6);
     }
 
     /// One allowance per (factory, strategy, configuration): never shared with a sibling.
@@ -294,11 +362,11 @@ contract FundingTest is Helpers {
         address otherStrategy = vf.create(keccak256("strategy C"), address(a), CONFIG);
         address otherConfig = vf.create(STRATEGY, address(a), keccak256("another configuration"));
         vm.startPrank(TRANSFER);
-        vm.expectRevert(DepositAccount.AllowanceExceeded.selector);
+        vm.expectRevert(DepositAccountState.AllowanceExceeded.selector);
         a.fund(address(second), sameKeysElsewhere, 1e6);
-        vm.expectRevert(DepositAccount.AllowanceExceeded.selector);
+        vm.expectRevert(DepositAccountState.AllowanceExceeded.selector);
         a.fund(address(vf), otherStrategy, 1e6);
-        vm.expectRevert(DepositAccount.AllowanceExceeded.selector);
+        vm.expectRevert(DepositAccountState.AllowanceExceeded.selector);
         a.fund(address(vf), otherConfig, 1e6);
         a.fund(address(vf), vault, 100e6);
         vm.stopPrank();
@@ -312,14 +380,14 @@ contract FundingTest is Helpers {
         FixtureVaultFactory evil = new FixtureVaultFactory();
         address evilVault = evil.create(STRATEGY, address(a), CONFIG);
         vm.prank(RECOVERY);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.fund(address(vf), vault, 1e6);
         vm.prank(RECOVERY);
         f.setTransferKey(RECOVERY);
         vm.startPrank(RECOVERY);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.fund(address(evil), evilVault, 1e6);
-        vm.expectRevert(DepositAccount.AllowanceExceeded.selector);
+        vm.expectRevert(DepositAccountState.AllowanceExceeded.selector);
         a.fund(address(vf), vault, 100e6 + 1);
         vm.stopPrank();
         assertFalse(a.isTrusted(address(evil), 3));
@@ -330,9 +398,9 @@ contract FundingTest is Helpers {
     function test_aGrantForAnotherDomainIsOnlyRecordedThenDispatched() public {
         uint256 id = authorise(a, PASSKEY_A, address(vf), 0, STRATEGY, CONFIG, 250e6);
         assertEq(a.allowanceOf(address(vf), STRATEGY, CONFIG), 0, "never added at the home");
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.dispatchAuthorisation(id); // before the trust is due
-        vm.expectRevert(DepositAccount.BadDomain.selector);
+        vm.expectRevert(DepositAccountState.BadDomain.selector);
         a.applyAuthorisation(id);
         vm.warp(dueOf(a, address(vf), 0));
         vm.prank(STRANGER);
@@ -350,10 +418,10 @@ contract FundingTest is Helpers {
         assertEq(sid, STRATEGY);
         assertEq(ch, CONFIG);
         assertEq(amount, 250e6);
-        vm.expectRevert(DepositAccount.NoGrant.selector);
+        vm.expectRevert(DepositAccountState.NoGrant.selector);
         a.dispatchAuthorisation(99);
         uint256 home = authorise(a, PASSKEY_A, address(vf), 3, STRATEGY, CONFIG, 1e6);
-        vm.expectRevert(DepositAccount.BadDomain.selector);
+        vm.expectRevert(DepositAccountState.BadDomain.selector);
         a.dispatchAuthorisation(home);
     }
 
@@ -372,7 +440,7 @@ contract FundingTest is Helpers {
 
     function deliverAuth(bytes memory body) internal {
         vm.prank(MT);
-        assertTrue(a.handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body));
+        assertTrue(rec(a).handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body));
     }
 
     function test_aCopyTakesAnAuthorisationOnceAndFundsItsVault() public {
@@ -386,18 +454,18 @@ contract FundingTest is Helpers {
         toEthereumCopy();
         vm.warp(t);
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotSynced.selector); // an unsynced copy: stays relayable
-        a.handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body);
+        vm.expectRevert(DepositAccountState.NotSynced.selector); // an unsynced copy: stays relayable
+        rec(a).handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body);
         deliverRecord(a, 1, DEST, two(wallet(WALLET_A), passkey(PASSKEY_A)));
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotHomeMessage.selector);
-        a.handleReceiveFinalizedMessage(0, bytes32(uint256(uint160(address(a)))), 2000, body);
+        vm.expectRevert(DepositAccountState.NotHomeMessage.selector);
+        rec(a).handleReceiveFinalizedMessage(0, bytes32(uint256(uint160(address(a)))), 2000, body);
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotFinalized.selector);
-        a.handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 1000, body);
+        vm.expectRevert(DepositAccountState.NotFinalized.selector);
+        rec(a).handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 1000, body);
         vm.prank(STRANGER);
-        vm.expectRevert(DepositAccount.NotTransmitter.selector);
-        a.handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body);
+        vm.expectRevert(DepositAccountState.NotTransmitter.selector);
+        rec(a).handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body);
 
         assertFalse(a.isTrusted(address(vf), 0));
         deliverAuth(body);
@@ -528,14 +596,14 @@ contract FundingTest is Helpers {
         MockTokenMessenger m = MockTokenMessenger(TM);
         assertEq(m.mintRecipient(), bytes32(uint256(uint160(address(a)))), "the user's own address");
         vm.prank(STRANGER);
-        a.publish(0);
+        rec(a).publish(0);
         bytes memory record = mt.body();
         uint256 t = vm.getBlockTimestamp();
 
         toEthereumCopy();
         vm.warp(t);
         vm.prank(MT);
-        a.handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, record);
+        rec(a).handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, record);
         MockToken(ETH_USDC).mint(address(a), 600e6); // Circle's mint lands
         vm.prank(vm.addr(WALLET_A));
         a.withdraw(ETH_USDC, 100e6);

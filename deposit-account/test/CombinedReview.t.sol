@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {DepositAccount} from "../src/DepositAccount.sol";
+import {DepositAccountState} from "../src/DepositAccountState.sol";
 import {DepositFactory} from "../src/DepositFactory.sol";
 import {Helpers, MockToken, MockTokenMessenger} from "./Helpers.sol";
 import {OwnerRecordTest} from "./OwnerRecord.t.sol";
@@ -20,7 +21,7 @@ contract CombinedReviewRecordTest is OwnerRecordTest {
         );
         vm.warp(vm.getBlockTimestamp() + 2 days); // removed at the home; nothing published here since
         vm.prank(MT);
-        a.handleReceiveFinalizedMessage(3, self(), 2000, held);
+        rec(a).handleReceiveFinalizedMessage(3, self(), 2000, held);
         assertTrue(a.isCredential(wallet(WALLET_B)), "removed at the home, a credential here");
         (uint256 n, uint256 dl, bytes memory sig) = revokeSig(a, WALLET_B, true);
         a.revokeTransfer(n, dl, sig);
@@ -41,7 +42,7 @@ contract CombinedReviewMoneyTest is MoneyTest {
         MockToken(USDC).mint(address(a), amt - m.maxFee()); // the mint back, less Circle's fee
         amt = usdc(address(a));
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BurnFeeTooHigh.selector);
+        vm.expectRevert(DepositAccountState.BurnFeeTooHigh.selector);
         a.convertBurn(amt, 2);
     }
 }
@@ -56,9 +57,9 @@ contract CombinedReviewFactoryTest is Helpers {
             vm.prank(RECOVERY);
             f.setTransferKey(mine);
             vm.prank(mine);
-            f.checkIn();
+            f.checkIn(supported());
         }
-        assertFalse(f.stopped(), "24 days with no DLTX transfer key, the hatch shut");
+        assertFalse(f.stopped(1), "24 days with no DLTX transfer key, the hatch shut");
     }
 
     /// CR-A5: an account's address needs its user's uuid to deploy: the same owner under another uuid is

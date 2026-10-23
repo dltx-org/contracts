@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Test} from "forge-std/Test.sol";
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {Credential, DepositAccount, StrategyGrant, Withdrawal} from "../src/DepositAccount.sol";
+import {DepositAccountRecord} from "../src/DepositAccountRecord.sol";
 import {DepositFactory} from "../src/DepositFactory.sol";
 
 /// A plain ERC-20; `quiet` makes `transfer` and `approve` return nothing, as Ethereum's USDT does.
@@ -241,6 +242,31 @@ abstract contract Helpers is Test {
         return Credential(2, bytes32(x), bytes32(y));
     }
 
+    /// The account seen through its record module: the functions version 1 runs there
+    /// (owner-upgrades-design.md §3.3), called on the account itself.
+    function rec(DepositAccount a) internal pure returns (DepositAccountRecord) {
+        return DepositAccountRecord(address(a));
+    }
+
+    /// The genesis alone, as the transfer key checks it in (owner-upgrades-design.md §A8).
+    function genesisOnly() internal pure returns (uint256[] memory v) {
+        v = new uint256[](1);
+        v[0] = 1;
+    }
+
+    /// Marked by `moveToV2` (code at this address): the suite runs on an account upgraded to the test
+    /// version 2 (test/OnV2.t.sol). A mark rather than a field, so a snapshot's revert takes it back
+    /// with the listing, and the suites' contracts keep their layout.
+    address constant ON_V2 = address(0x0002_0002);
+
+    /// The versions the suites' transfer key checks in: the genesis, and version 2 once listed by
+    /// `moveToV2`.
+    function supported() internal view returns (uint256[] memory v) {
+        if (ON_V2.code.length == 0) return genesisOnly();
+        v = new uint256[](2);
+        (v[0], v[1]) = (1, 2);
+    }
+
     function one(Credential memory a) internal pure returns (Credential[] memory s) {
         s = new Credential[](1);
         s[0] = a;
@@ -314,7 +340,7 @@ abstract contract Helpers is Test {
         uint256 nonce = a.recordNonceOf(credOf(signer));
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
         bytes32 d = typed(a, abi.encode(a.ADD_CREDENTIAL_TYPEHASH(), c.kind, c.x, c.y, nonce, deadline));
-        a.addCredential(c, nonce, deadline, sign(signer, d));
+        rec(a).addCredential(c, nonce, deadline, sign(signer, d));
     }
 
     /// Proposes the addition and lets its 24 hours pass (decision 31).
@@ -326,7 +352,7 @@ abstract contract Helpers is Test {
     function cancelAddition(DepositAccount a, uint256 signer, Credential memory c, uint256 due) internal {
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
         bytes32 d = typed(a, abi.encode(a.CANCEL_ADDITION_TYPEHASH(), c.kind, c.x, c.y, due, deadline));
-        a.cancelAddition(c, due, deadline, sign(signer, d));
+        rec(a).cancelAddition(c, due, deadline, sign(signer, d));
     }
 
     /// Proposes the withdrawal address and lets its 24 hours pass (decision 32).
@@ -339,26 +365,26 @@ abstract contract Helpers is Test {
         uint256 nonce = a.recordNonceOf(credOf(signer));
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
         bytes32 d = typed(a, abi.encode(a.REMOVE_CREDENTIAL_TYPEHASH(), c.kind, c.x, c.y, nonce, deadline));
-        a.proposeRemoval(c, nonce, deadline, sign(signer, d));
+        rec(a).proposeRemoval(c, nonce, deadline, sign(signer, d));
     }
 
     function cancelRemoval(DepositAccount a, uint256 signer, Credential memory c, uint256 due) internal {
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
         bytes32 d = typed(a, abi.encode(a.CANCEL_REMOVAL_TYPEHASH(), c.kind, c.x, c.y, due, deadline));
-        a.cancelRemoval(c, due, deadline, sign(signer, d));
+        rec(a).cancelRemoval(c, due, deadline, sign(signer, d));
     }
 
     function setWithdrawal(DepositAccount a, uint256 signer, address next) internal {
         uint256 nonce = a.recordNonceOf(credOf(signer));
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
         bytes32 d = typed(a, abi.encode(a.SET_WITHDRAWAL_ADDRESS_TYPEHASH(), next, nonce, deadline));
-        a.setWithdrawalAddress(next, nonce, deadline, sign(signer, d));
+        rec(a).setWithdrawalAddress(next, nonce, deadline, sign(signer, d));
     }
 
     function cancelWithdrawal(DepositAccount a, uint256 signer, address next, uint256 due) internal {
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
         bytes32 d = typed(a, abi.encode(a.CANCEL_WITHDRAWAL_ADDRESS_TYPEHASH(), next, due, deadline));
-        a.cancelWithdrawalAddress(next, due, deadline, sign(signer, d));
+        rec(a).cancelWithdrawalAddress(next, due, deadline, sign(signer, d));
     }
 
     function revokeSig(DepositAccount a, uint256 signer, bool revoke)
@@ -460,12 +486,106 @@ abstract contract Helpers is Test {
         );
     }
 
+    // ── versions and upgrades (owner-upgrades-design.md §3.2, §3.4) ──────────────────────────
+
+    /// The test version 2 for `f`: its module, then its main contract. From the build's artifacts, not
+    /// `new`: a suite embedding both versions' creation code next to the factory's passes 64 KB, where
+    /// solc's IR backend fails ("Tag too large").
+    function newV2(DepositFactory f) internal returns (address) {
+        return newVersion(f, "DepositAccountV2.sol:DepositAccountRecordV2", "DepositAccountV2.sol:DepositAccountV2");
+    }
+
+    function newV3(DepositFactory f) internal returns (address) {
+        return newVersion(f, "DepositAccountV2.sol:DepositAccountRecordV3", "DepositAccountV2.sol:DepositAccountV3");
+    }
+
+    function newVersion(DepositFactory f, string memory module, string memory main) internal returns (address) {
+        address m = vm.deployCode(module, abi.encode(address(f)));
+        return vm.deployCode(main, abi.encode(address(f), m, m.codehash));
+    }
+
+    /// Recovery proposes `impl`, its 7 days pass, recovery accepts it.
+    function list(DepositFactory f, address impl) internal {
+        vm.prank(RECOVERY);
+        f.proposeImplementation(impl);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        vm.prank(RECOVERY);
+        f.acceptImplementation(impl);
+    }
+
+    /// Lists the test version 2 in `f` and moves `a` to it as an applied upgrade leaves it (the slot
+    /// written, nothing else), at the same block time: version 2's check-in clock is set to the
+    /// genesis's, so the suites' time arithmetic holds. The upgrade path itself is test/Upgrade.t.sol's.
+    function moveToV2(DepositFactory f, DepositAccount a) internal returns (address v2) {
+        v2 = newV2(f);
+        uint256 t = vm.getBlockTimestamp();
+        list(f, v2);
+        vm.warp(t);
+        vm.store(address(f), keccak256(abi.encode(uint256(2), uint256(4))), bytes32(f.lastCheckIn(1)));
+        vm.store(
+            address(a),
+            0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc,
+            bytes32(uint256(uint160(v2)))
+        );
+        require(a.CODE_VERSION() == 2 && f.lastCheckIn(2) == f.lastCheckIn(1), "not moved");
+        vm.etch(ON_V2, hex"00");
+    }
+
+    /// The owner's `ScheduleUpgrade` to `impl`, signed with the signer's next record nonce.
+    function scheduleUpgrade(DepositAccount a, uint256 signer, address impl) internal returns (uint256 due) {
+        uint256 nonce = a.recordNonceOf(credOf(signer));
+        uint256 deadline = vm.getBlockTimestamp() + 1 hours;
+        bytes32 d = typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), impl, nonce, deadline));
+        rec(a).scheduleUpgrade(impl, nonce, deadline, sign(signer, d));
+        (,, due) = a.pendingUpgrade();
+    }
+
+    function cancelUpgrade(DepositAccount a, uint256 signer, address impl, uint256 due) internal {
+        (uint256 deadline, bytes memory sig) = cancelUpgradeSig(a, signer, impl, due);
+        rec(a).cancelUpgrade(impl, due, deadline, sig);
+    }
+
+    /// The owner's `CancelUpgrade`, for a test that expects the call itself to revert.
+    function cancelUpgradeSig(DepositAccount a, uint256 signer, address impl, uint256 due)
+        internal
+        view
+        returns (uint256 deadline, bytes memory sig)
+    {
+        deadline = vm.getBlockTimestamp() + 1 hours;
+        sig = sign(signer, typed(a, abi.encode(a.CANCEL_UPGRADE_TYPEHASH(), impl, due, deadline)));
+    }
+
+    /// The owner's `ScheduleUpgrade` with the signer's next record nonce, for a test that expects the
+    /// call itself to revert.
+    function scheduleUpgradeSig(DepositAccount a, uint256 signer, address impl)
+        internal
+        view
+        returns (uint256 nonce, uint256 deadline, bytes memory sig)
+    {
+        nonce = a.recordNonceOf(credOf(signer));
+        deadline = vm.getBlockTimestamp() + 1 hours;
+        sig = sign(signer, typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), impl, nonce, deadline)));
+    }
+
+    /// Schedules `impl`, lets its 24 hours pass and applies it, as anyone may.
+    function upgradeNow(DepositAccount a, uint256 signer, address impl) internal {
+        scheduleUpgrade(a, signer, impl);
+        vm.warp(vm.getBlockTimestamp() + 24 hours);
+        vm.prank(STRANGER);
+        rec(a).applyUpgrade();
+    }
+
+    /// The home's upgrade message, as `publishUpgrade` encodes it.
+    function upgradeBody(address impl, uint64 publishedAt) internal pure returns (bytes memory) {
+        return abi.encode(keccak256("dltx.owner-upgrade.v1"), impl, publishedAt);
+    }
+
     /// Brings a copy in sync with the home's record of `version`, as Circle's transmitter delivers it.
     function deliverRecord(DepositAccount a, uint64 version, address withdrawalAddress, Credential[] memory creds)
         internal
     {
         bytes memory body = abi.encode(a.RECORD_TAG(), version, uint64(vm.getBlockTimestamp()), withdrawalAddress, creds);
         vm.prank(0x81D40F21F12A8F0E3252Bccb954D722d4c464B64);
-        a.handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body);
+        rec(a).handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body);
     }
 }

@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {Vm} from "forge-std/Test.sol";
 import {Credential, DepositAccount} from "../src/DepositAccount.sol";
+import {DepositAccountState} from "../src/DepositAccountState.sol";
 import {DepositFactory} from "../src/DepositFactory.sol";
 import {Helpers} from "./Helpers.sol";
 
@@ -51,7 +52,7 @@ contract PoolUser {
 
 /*
  * Fork tests against the real chains (spec §13). Each runs when its RPC url is set (test.mjs reads
- * them from apps/api/.env; HyperEVM's and Avalanche's default to their public RPCs) and is skipped
+ * them from apps/api-v1/.env; HyperEVM's and Avalanche's default to their public RPCs) and is skipped
  * otherwise:
  *   - Arbitrum: the canonical deterministic deployer, the P-256 precompile present (gas measured),
  *     Circle's real MessageTransmitterV2 sending a deposit account's record, the USDT0 → USDC swap
@@ -62,7 +63,10 @@ contract PoolUser {
  *   - Avalanche: a copy receiving the record Arbitrum's transmitter emitted, Circle's real USDC burned
  *     by the real TokenMessengerV2 to Arbitrum (its messenger has no minimum fee: `burnMinFee` 0);
  *   - every chain with a url: the factory, implementation and an account at the same address, and
- *     the build (cancun: MCOPY, PUSH0) running there.
+ *     the build (cancun: MCOPY, PUSH0) running there;
+ *   - Arbitrum then HyperEVM: the upgrade end to end (owner-upgrades-design.md §9): the test version 2
+ *     deployed by the deterministic deployer at one address on both, listed on each, a deposit, the
+ *     owner's upgrade at the home, its message through Circle's real transmitter, the copy following.
  */
 contract ForkTest is Helpers {
     bytes32 constant DEPLOYER_CODEHASH = keccak256(DEPLOYER_RUNTIME);
@@ -151,6 +155,81 @@ contract ForkTest is Helpers {
         if (seen == 0) vm.skip(true);
     }
 
+    // ── the upgrade, end to end (owner-upgrades-design.md §3.4, §3.5) ─────────────────────────
+
+    /// A later version as the operator deploys it (§3.2): its module, then its main contract, through
+    /// the deterministic deployer, the factory's address their constructor argument: the same address
+    /// on every chain.
+    function deployV2Deterministic(DepositFactory f) internal returns (address impl) {
+        bytes32 salt = keccak256("dltx.deposit-account.v2-test");
+        (bool ok, bytes memory ret) = DEPLOYER.call(
+            abi.encodePacked(salt, vm.getCode("DepositAccountV2.sol:DepositAccountRecordV2"), abi.encode(address(f)))
+        );
+        require(ok && ret.length == 20, "the module's deployment failed");
+        address m = address(bytes20(ret));
+        (ok, ret) = DEPLOYER.call(
+            abi.encodePacked(salt, vm.getCode("DepositAccountV2.sol:DepositAccountV2"), abi.encode(address(f), m, m.codehash))
+        );
+        require(ok && ret.length == 20, "the implementation's deployment failed");
+        impl = address(bytes20(ret));
+    }
+
+    function test_arbitrum_anUpgradeEndToEndThenAHyperEvmCopyFollows() public {
+        if (!fork("ARBITRUM_RPC_URL")) return vm.skip(true);
+        DepositFactory f = deployReal();
+        DepositAccount a = DepositAccount(f.deploy(ALICE, owners()));
+        assertEq(a.implementation(), f.genesis());
+        setWithdrawal(a, PASSKEY_A, DEST);
+        deal(ARB_USDC, address(a), 100e6);
+        address v2 = deployV2Deterministic(f);
+        list(f, v2);
+        uint256 g = gasleft();
+        scheduleUpgrade(a, PASSKEY_A, v2);
+        emit log_named_uint("scheduleUpgrade gas (passkey, Arbitrum precompile absent in this runtime)", g - gasleft());
+        vm.warp(vm.getBlockTimestamp() + 24 hours);
+        vm.prank(STRANGER);
+        g = gasleft();
+        rec(a).applyUpgrade();
+        emit log_named_uint("applyUpgrade gas", g - gasleft());
+        assertEq(a.implementation(), v2);
+        assertEq(a.CODE_VERSION(), 2);
+        // the money is where it was, and leaves as before
+        vm.prank(TRANSFER);
+        a.withdraw(ARB_USDC, 100e6);
+        assertEq(IERC20(ARB_USDC).balanceOf(DEST), 100e6);
+
+        vm.recordLogs();
+        vm.prank(STRANGER);
+        rec(a).publishUpgrade(19);
+        bytes memory message = sentMessage(vm.getRecordedLogs());
+        bytes32 self = bytes32(uint256(uint160(address(a))));
+        assertEq(uint32(bytes4(slice(message, 8, 12))), 19, "destination domain");
+        assertEq(bytes32(slice(message, 76, 108)), self, "recipient");
+        assertEq(uint32(bytes4(slice(message, 140, 144))), 2000, "finalized");
+        bytes memory body = slice(message, 148, message.length);
+        (, address named, uint64 publishedAt) = abi.decode(body, (bytes32, address, uint64));
+        assertEq(named, v2);
+
+        if (!fork("HYPEREVM_RPC_URL")) return;
+        DepositFactory hf = deployReal();
+        assertEq(address(hf), address(f), "the factory, the same address");
+        address hv2 = deployV2Deterministic(hf);
+        assertEq(hv2, v2, "version 2, the same address");
+        DepositAccount copy = DepositAccount(hf.deploy(ALICE, owners()));
+        assertEq(address(copy), address(a));
+        // not listed here yet: the message reverts and stays relayable
+        vm.prank(MT);
+        vm.expectRevert(DepositAccountState.BadImplementation.selector);
+        rec(copy).handleReceiveFinalizedMessage(3, self, 2000, body);
+        list(hf, hv2);
+        if (vm.getBlockTimestamp() < publishedAt) vm.warp(publishedAt);
+        require(vm.getBlockTimestamp() <= uint256(publishedAt) + 3 days, "the forks' clocks are apart");
+        vm.prank(MT);
+        assertTrue(rec(copy).handleReceiveFinalizedMessage(3, self, 2000, body));
+        assertEq(copy.implementation(), v2, "the copy followed its home");
+        assertEq(copy.CODE_VERSION(), 2);
+    }
+
     // ── Arbitrum: the home ───────────────────────────────────────────────────────────────────
 
     function test_arbitrum_thePasskeyUsesThePrecompile() public {
@@ -187,7 +266,7 @@ contract ForkTest is Helpers {
 
         vm.recordLogs();
         vm.prank(STRANGER);
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory message = sentMessage(vm.getRecordedLogs());
         bytes32 self = bytes32(uint256(uint160(address(a))));
         // CCTP V2's header: version, source, destination, nonce, sender, recipient, caller,
@@ -214,7 +293,7 @@ contract ForkTest is Helpers {
         assertFalse(copy.checkOwnerSignature(x, signPasskey(PASSKEY_A, x)));
 
         vm.prank(MT);
-        assertTrue(copy.handleReceiveFinalizedMessage(3, self, 2000, body));
+        assertTrue(rec(copy).handleReceiveFinalizedMessage(3, self, 2000, body));
         uint256 used = passkeyGas(copy);
         emit log_named_uint("passkey verification gas, HyperEVM (Solidity fallback)", used);
         assertGt(used, 150_000, "the fallback");
@@ -225,7 +304,7 @@ contract ForkTest is Helpers {
         bytes32 d = keccak256("x");
         assertTrue(copy.checkOwnerSignature(d, signPasskey(PASSKEY_A, d)));
         // and the copy refuses the owner's change directly
-        vm.expectRevert(DepositAccount.NotHome.selector);
+        vm.expectRevert(DepositAccountState.NotHome.selector);
         this.setOn(copy, DEST2);
     }
 
@@ -285,11 +364,11 @@ contract ForkTest is Helpers {
         emit log_named_uint("the pool's USDC for 1,000 USDT0, the market moved down", low);
         assertLt(low, 998e6);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BelowMinimum.selector);
+        vm.expectRevert(DepositAccountState.BelowMinimum.selector);
         a.convertSwap(1_000e6, 0);
         assertEq(IERC20(ARB_USDT0).balanceOf(address(a)), 1_000e6);
         vm.prank(STRANGER);
-        vm.expectRevert(DepositAccount.NotAllowed.selector);
+        vm.expectRevert(DepositAccountState.NotAllowed.selector);
         a.convertSwap(1, 0);
     }
 
@@ -319,7 +398,7 @@ contract ForkTest is Helpers {
         vm.warp(vm.getBlockTimestamp() + 24 hours);
         vm.recordLogs();
         vm.prank(STRANGER);
-        a.publish(1);
+        rec(a).publish(1);
         bytes memory message = sentMessage(vm.getRecordedLogs());
         bytes32 self = bytes32(uint256(uint160(address(a))));
         assertEq(uint32(bytes4(slice(message, 8, 12))), 1, "destination domain: Avalanche");
@@ -343,7 +422,7 @@ contract ForkTest is Helpers {
         assertEq(pool, address(0), "no USDT pool on Avalanche");
 
         vm.prank(MT);
-        assertTrue(copy.handleReceiveFinalizedMessage(3, self, 2000, body));
+        assertTrue(rec(copy).handleReceiveFinalizedMessage(3, self, 2000, body));
         assertEq(copy.withdrawalAddress(), DEST);
         bytes32 d = keccak256("x");
         assertTrue(copy.checkOwnerSignature(d, signWallet(WALLET_A, d)));
@@ -394,7 +473,7 @@ contract ForkTest is Helpers {
         tm.setMinFee(20_000); // 20 bp: above the account's 10 bp cap
         deal(usdc, address(a), 100e6);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BurnFeeTooHigh.selector);
+        vm.expectRevert(DepositAccountState.BurnFeeTooHigh.selector);
         a.convertBurn(100e6, 3);
         assertEq(IERC20(usdc).balanceOf(address(a)), 100e6, "kept, withdrawable");
     }
@@ -408,7 +487,7 @@ contract ForkTest is Helpers {
         Credential[] memory next = two(passkey(PASSKEY_A), passkey(PASSKEY_B));
         bytes memory body = abi.encode(a.RECORD_TAG(), uint64(5), uint64(vm.getBlockTimestamp()), DEST, next);
         vm.prank(MT);
-        assertTrue(a.handleReceiveFinalizedMessage(3, self, 2000, body));
+        assertTrue(rec(a).handleReceiveFinalizedMessage(3, self, 2000, body));
         assertEq(a.version(), 5);
         assertEq(a.withdrawalAddress(), DEST);
         bytes32 d = keccak256("x");
@@ -416,10 +495,10 @@ contract ForkTest is Helpers {
         assertFalse(a.checkOwnerSignature(d, signWallet(WALLET_A, d)));
         // another sender, another domain, unfinalized: refused
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotHomeMessage.selector);
-        a.handleReceiveFinalizedMessage(19, self, 2000, body);
+        vm.expectRevert(DepositAccountState.NotHomeMessage.selector);
+        rec(a).handleReceiveFinalizedMessage(19, self, 2000, body);
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotFinalized.selector);
-        a.handleReceiveUnfinalizedMessage(3, self, 1000, body);
+        vm.expectRevert(DepositAccountState.NotFinalized.selector);
+        rec(a).handleReceiveUnfinalizedMessage(3, self, 1000, body);
     }
 }

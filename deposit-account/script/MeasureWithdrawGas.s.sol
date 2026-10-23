@@ -73,7 +73,7 @@ contract MeasureWithdrawGas is Helpers {
             bytes memory body = abi.encode(
                 a.RECORD_TAG(), uint64(1), uint64(vm.getBlockTimestamp() + 1 hours), destOf(kind), one(credOf(keyOf(kind)))
             );
-            a.handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body);
+            rec(a).handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(address(a)))), 2000, body);
         }
         vm.stopBroadcast();
     }

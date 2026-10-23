@@ -15,8 +15,9 @@ optimizer_runs = 1
 via_ir = true
 bytecode_hash = "none"
 cbor_metadata = false
-# the fork tests read slice 2's vault factory build (test/fixtures, see its README section)
-fs_permissions = [{ access = "read", path = "./test/fixtures" }]
+# the fork tests read slice 2's vault factory build (test/fixtures, see its README section); the
+# suites deploy the test version 2 from its artifact (out/, test/Helpers.sol `newVersion`)
+fs_permissions = [{ access = "read", path = "./test/fixtures" }, { access = "read", path = "./out" }]
 # the seam test (test/Seam.t.sol) imports the vault project's pure libraries for its types and pins
 allow_paths = ["../strategy-vault/src/lib"]
 # HyperEVM's small blocks hold 2–3M gas; a fork test deploys the factory (≈ 5.8M) in one call

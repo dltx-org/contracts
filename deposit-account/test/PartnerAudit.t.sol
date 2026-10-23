@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {DepositAccount, Withdrawal} from "../src/DepositAccount.sol";
+import {DepositAccountState} from "../src/DepositAccountState.sol";
 import {MockToken, MockTokenMessenger} from "./Helpers.sol";
 import {OwnerRecordTest} from "./OwnerRecord.t.sol";
 import {MoneyTest} from "./Money.t.sol";
@@ -19,14 +20,14 @@ contract PartnerAuditRecordTest is OwnerRecordTest {
         // the home: the old record (WALLET_A, PASSKEY_A, DEST), published at t0
         setWithdrawalNow(a, PASSKEY_A, DEST);
         uint256 t0 = vm.getBlockTimestamp();
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory oldRecord = mt.body();
         // the home: WALLET_A removed, the address replaced; a fresh publish 31 days after t0
         proposeRemoval(a, PASSKEY_A, wallet(WALLET_A));
         setWithdrawal(a, PASSKEY_A, DEST2);
         uint256 late = t0 + 31 days;
         vm.warp(late);
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory fresh = mt.body();
 
         // the copy, at the old record
@@ -35,7 +36,7 @@ contract PartnerAuditRecordTest is OwnerRecordTest {
         deliver(oldRecord);
         vm.deal(address(a), 100 ether);
         vm.prank(TRANSFER);
-        f.checkIn(); // the transfer key alive: the hatch shut
+        f.checkIn(supported()); // the transfer key alive: the hatch shut
 
         // within the 30 days, the old record stands (the bound the expiry sets)
         vm.warp(t0 + 30 days);
@@ -46,7 +47,7 @@ contract PartnerAuditRecordTest is OwnerRecordTest {
         for (uint256 i; i < 2; ++i) {
             vm.warp(i == 0 ? t0 + 30 days + 1 : t0 + 365 days);
             vm.prank(TRANSFER);
-            f.checkIn();
+            f.checkIn(supported());
             assertFalse(a.synced(), "the copy expired");
             assertFalse(a.checkOwnerSignature(d, signWallet(WALLET_A, d)), "the removed key signs nothing");
             assertFalse(a.isCredential(wallet(WALLET_A)));
@@ -54,13 +55,13 @@ contract PartnerAuditRecordTest is OwnerRecordTest {
             Withdrawal memory w =
                 Withdrawal(address(0), 100e6, DEST, 0, address(0), 0, vm.getBlockTimestamp() + 1 hours);
             bytes memory sig = signWithdrawal(a, WALLET_A, w);
-            vm.expectRevert(DepositAccount.NotSynced.selector);
+            vm.expectRevert(DepositAccountState.NotSynced.selector);
             a.withdrawSigned(w, 0, sig);
             vm.prank(TRANSFER);
-            vm.expectRevert(DepositAccount.NotSynced.selector);
+            vm.expectRevert(DepositAccountState.NotSynced.selector);
             a.withdraw(address(0), 100e6);
             vm.prank(vm.addr(WALLET_A));
-            vm.expectRevert(DepositAccount.NotSynced.selector);
+            vm.expectRevert(DepositAccountState.NotSynced.selector);
             a.withdraw(address(0), 100e6);
         }
         assertEq(DEST.balance, 0, "nothing paid to the replaced address");
@@ -84,10 +85,10 @@ contract PartnerAuditRecordTest is OwnerRecordTest {
     function test_audit_theSameRecordPublishedLaterRenewsTheCopy() public {
         setWithdrawalNow(a, PASSKEY_A, DEST);
         uint256 t0 = vm.getBlockTimestamp();
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory first = mt.body();
         vm.warp(t0 + 20 days);
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory renewal = mt.body();
 
         toCopyAtGenesis();
@@ -129,7 +130,7 @@ contract PartnerAuditMoneyTest is MoneyTest {
         for (uint256 i; i < 10; ++i) {
             uint256 amt = usdc(address(a));
             vm.prank(TRANSFER);
-            if (i > 0) vm.expectRevert(DepositAccount.BurnFeeTooHigh.selector);
+            if (i > 0) vm.expectRevert(DepositAccountState.BurnFeeTooHigh.selector);
             a.convertBurn(amt, 2);
             if (i > 0) continue;
             paid += m.maxFee();
@@ -161,7 +162,7 @@ contract PartnerAuditMoneyTest is MoneyTest {
             MockToken(USDC).mint(address(a), 250e6 - m.maxFee());
         }
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BurnFeeTooHigh.selector);
+        vm.expectRevert(DepositAccountState.BurnFeeTooHigh.selector);
         a.convertBurn(10e6, 2);
     }
 
@@ -178,7 +179,7 @@ contract PartnerAuditMoneyTest is MoneyTest {
         assertEq(m.maxFee(), 99e6);
         MockToken(USDC).mint(address(a), 99_000e6 - 99e6); // the round trip back
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.BurnFeeTooHigh.selector);
+        vm.expectRevert(DepositAccountState.BurnFeeTooHigh.selector);
         a.convertBurn(10_000e6, 2);
     }
 }

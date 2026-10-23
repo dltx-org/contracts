@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {Credential, DepositAccount} from "../src/DepositAccount.sol";
+import {DepositAccountState} from "../src/DepositAccountState.sol";
 import {DepositFactory} from "../src/DepositFactory.sol";
 import {ContractWallet, Helpers, MockTransmitter} from "./Helpers.sol";
 
@@ -21,7 +22,7 @@ contract OwnerRecordTest is Helpers {
     /// (decision 76), the copy the tests of §7.3 start from.
     uint256 copyGenesis;
 
-    function setUp() public {
+    function setUp() public virtual {
         vm.chainId(ARBITRUM);
         f = deployFactory();
         vm.prank(RECOVERY);
@@ -98,8 +99,8 @@ contract OwnerRecordTest is Helpers {
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
         Credential memory c = walletOf(address(cw));
         bytes32 d = typed(a, abi.encode(a.ADD_CREDENTIAL_TYPEHASH(), c.kind, c.x, c.y, nonce, deadline));
-        vm.expectRevert(DepositAccount.BadCredential.selector);
-        a.addCredential(c, nonce, deadline, signWallet(WALLET_A, d));
+        vm.expectRevert(DepositAccountState.BadCredential.selector);
+        rec(a).addCredential(c, nonce, deadline, signWallet(WALLET_A, d));
         assertFalse(a.checkOwnerSignature(d, abi.encodePacked(uint8(1), address(cw), new bytes(45))));
     }
 
@@ -133,14 +134,14 @@ contract OwnerRecordTest is Helpers {
     function test_aThiefsAdditionIsCancelled() public {
         addCredential(a, WALLET_A, passkey(PASSKEY_B)); // WALLET_A stolen: PASSKEY_B is the thief's
         uint256 due = a.additionDue(passkey(PASSKEY_B));
-        vm.expectRevert(DepositAccount.BadSignature.selector);
+        vm.expectRevert(DepositAccountState.BadSignature.selector);
         this.cancelA(PASSKEY_B, passkey(PASSKEY_B), due); // the accomplice can't act yet
         cancelAddition(a, PASSKEY_A, passkey(PASSKEY_B), due);
         vm.warp(due + 1);
         assertFalse(a.isCredential(passkey(PASSKEY_B)));
         assertEq(a.additionDue(passkey(PASSKEY_B)), 0);
         assertEq(a.version(), 1);
-        vm.expectRevert(DepositAccount.NothingPending.selector);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
         this.cancelA(PASSKEY_A, passkey(PASSKEY_B), due); // a replay cancels nothing
     }
 
@@ -152,7 +153,7 @@ contract OwnerRecordTest is Helpers {
         addCredential(a, WALLET_A, wallet(WALLET_B));
         uint256 due = a.additionDue(wallet(WALLET_B));
         vm.warp(due);
-        vm.expectRevert(DepositAccount.NothingPending.selector);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
         this.cancelA(PASSKEY_A, wallet(WALLET_B), due);
     }
 
@@ -162,34 +163,34 @@ contract OwnerRecordTest is Helpers {
         // WALLET_A's record nonce 0 went on setUp's addition
         bytes32 d = typed(a, abi.encode(a.ADD_CREDENTIAL_TYPEHASH(), c.kind, c.x, c.y, uint256(1), deadline));
         bytes memory sig = signWallet(WALLET_A, d);
-        vm.expectRevert(DepositAccount.BadSignature.selector); // the nonce is signed
-        a.addCredential(c, 2, deadline, sig);
-        a.addCredential(c, 1, deadline, sig);
-        vm.expectRevert(DepositAccount.BadNonce.selector);
-        a.addCredential(c, 1, deadline, sig);
+        vm.expectRevert(DepositAccountState.BadSignature.selector); // the nonce is signed
+        rec(a).addCredential(c, 2, deadline, sig);
+        rec(a).addCredential(c, 1, deadline, sig);
+        vm.expectRevert(DepositAccountState.BadNonce.selector);
+        rec(a).addCredential(c, 1, deadline, sig);
 
         Credential memory p = passkey(PASSKEY_B);
         d = typed(a, abi.encode(a.ADD_CREDENTIAL_TYPEHASH(), p.kind, p.x, p.y, uint256(2), deadline));
         sig = signWallet(WALLET_A, d);
         vm.warp(deadline + 1);
-        vm.expectRevert(DepositAccount.Expired.selector);
-        a.addCredential(p, 2, deadline, sig);
+        vm.expectRevert(DepositAccountState.Expired.selector);
+        rec(a).addCredential(p, 2, deadline, sig);
     }
 
     function test_aRecordChangeSignedByAStrangerIsRefused() public {
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
         Credential memory c = wallet(WALLET_B);
         bytes32 d = typed(a, abi.encode(a.ADD_CREDENTIAL_TYPEHASH(), c.kind, c.x, c.y, uint256(0), deadline));
-        vm.expectRevert(DepositAccount.BadSignature.selector);
-        a.addCredential(c, 0, deadline, signWallet(WALLET_B, d));
+        vm.expectRevert(DepositAccountState.BadSignature.selector);
+        rec(a).addCredential(c, 0, deadline, signWallet(WALLET_B, d));
     }
 
     function test_atMostFourCredentialsAndNoDuplicate() public {
-        vm.expectRevert(DepositAccount.AlreadyMember.selector);
+        vm.expectRevert(DepositAccountState.AlreadyMember.selector);
         this.add(PASSKEY_A, passkey(PASSKEY_A));
         addCredential(a, WALLET_A, wallet(WALLET_B));
         addCredential(a, WALLET_A, passkey(PASSKEY_B));
-        vm.expectRevert(DepositAccount.TooManyCredentials.selector);
+        vm.expectRevert(DepositAccountState.TooManyCredentials.selector);
         this.add(WALLET_A, wallet(0xC0FFEE));
     }
 
@@ -212,9 +213,9 @@ contract OwnerRecordTest is Helpers {
         assertEq(a.version(), 3);
         assertEq(a.credentials().length, 2);
         assertEq(a.removalDue(wallet(WALLET_B)), 0);
-        // the next change settles it in storage
+        // the next change settles it in storage; the first address is in effect at once (D1)
         setWithdrawal(a, WALLET_A, DEST);
-        assertEq(a.version(), 3);
+        assertEq(a.version(), 4);
         assertEq(a.credentials().length, 2);
     }
 
@@ -228,7 +229,7 @@ contract OwnerRecordTest is Helpers {
         assertTrue(a.isCredential(wallet(WALLET_B)));
         assertEq(a.version(), 2);
         // a cancel replayed, or of a removal no longer pending, cancels nothing
-        vm.expectRevert(DepositAccount.NothingPending.selector);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
         this.cancelR(WALLET_A, wallet(WALLET_B), due);
     }
 
@@ -241,7 +242,7 @@ contract OwnerRecordTest is Helpers {
         addNow(a, WALLET_A, wallet(WALLET_B)); // three: WALLET_A, PASSKEY_A, WALLET_B (the thief's)
         proposeRemoval(a, PASSKEY_A, wallet(WALLET_B));
         uint256 due = a.removalDue(wallet(WALLET_B));
-        vm.expectRevert(DepositAccount.SelfCancel.selector);
+        vm.expectRevert(DepositAccountState.SelfCancel.selector);
         this.cancelR(WALLET_B, wallet(WALLET_B), due);
         vm.warp(due);
         assertFalse(a.isCredential(wallet(WALLET_B)), "the owner's two honest credentials win");
@@ -285,7 +286,7 @@ contract OwnerRecordTest is Helpers {
         proposeRemoval(a, PASSKEY_A, wallet(WALLET_B));
         proposeRemoval(a, WALLET_B, passkey(PASSKEY_A));
         uint256 due = a.removalDue(wallet(WALLET_B));
-        vm.expectRevert(DepositAccount.SelfCancel.selector);
+        vm.expectRevert(DepositAccountState.SelfCancel.selector);
         this.cancelR(WALLET_B, wallet(WALLET_B), due);
         cancelRemoval(a, WALLET_A, passkey(PASSKEY_A), a.removalDue(passkey(PASSKEY_A)));
         vm.warp(due);
@@ -300,7 +301,7 @@ contract OwnerRecordTest is Helpers {
         proposeRemoval(a, WALLET_B, passkey(PASSKEY_A));
         proposeRemoval(a, PASSKEY_A, wallet(WALLET_B));
         uint256 due = a.removalDue(wallet(WALLET_B));
-        vm.expectRevert(DepositAccount.SelfCancel.selector);
+        vm.expectRevert(DepositAccountState.SelfCancel.selector);
         this.cancelR(WALLET_B, wallet(WALLET_B), due);
         cancelRemoval(a, WALLET_A, passkey(PASSKEY_A), a.removalDue(passkey(PASSKEY_A)));
         vm.warp(due);
@@ -325,7 +326,7 @@ contract OwnerRecordTest is Helpers {
         (uint256 tn, uint256 td, bytes memory tsig) = revokeSig(a, WALLET_B, false);
         a.allowTransfer(tn, td, tsig);
         // the owner's signatures still stand
-        a.proposeRemoval(t, nonce, deadline, sig);
+        rec(a).proposeRemoval(t, nonce, deadline, sig);
         a.revokeTransfer(ln, ld, lsig);
         assertTrue(a.transferRevoked());
         assertGt(a.removalDue(t), 0);
@@ -334,7 +335,7 @@ contract OwnerRecordTest is Helpers {
     /// A pending addition is cancelled, not removed, and doesn't count as standing.
     function test_aPendingAdditionIsNotRemovable() public {
         addCredential(a, WALLET_A, wallet(WALLET_B));
-        vm.expectRevert(DepositAccount.NotMember.selector);
+        vm.expectRevert(DepositAccountState.NotMember.selector);
         this.remove(PASSKEY_A, wallet(WALLET_B));
     }
 
@@ -343,20 +344,20 @@ contract OwnerRecordTest is Helpers {
         proposeRemoval(a, PASSKEY_A, wallet(WALLET_B));
         uint256 due = a.removalDue(wallet(WALLET_B));
         vm.warp(due);
-        vm.expectRevert(DepositAccount.NothingPending.selector);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
         this.cancelR(WALLET_A, wallet(WALLET_B), due);
     }
 
     function test_aRemovalIsSignedByAnotherAndNeverTheLast() public {
-        vm.expectRevert(DepositAccount.SelfRemoval.selector);
+        vm.expectRevert(DepositAccountState.SelfRemoval.selector);
         this.remove(WALLET_A, wallet(WALLET_A));
-        vm.expectRevert(DepositAccount.NotMember.selector);
+        vm.expectRevert(DepositAccountState.NotMember.selector);
         this.remove(WALLET_A, wallet(WALLET_B));
         proposeRemoval(a, PASSKEY_A, wallet(WALLET_A));
-        vm.expectRevert(DepositAccount.AlreadyPending.selector);
+        vm.expectRevert(DepositAccountState.AlreadyPending.selector);
         this.remove(PASSKEY_A, wallet(WALLET_A));
         // the passkey would be the last one standing
-        vm.expectRevert(DepositAccount.LastCredential.selector);
+        vm.expectRevert(DepositAccountState.LastCredential.selector);
         this.remove(WALLET_A, passkey(PASSKEY_A));
     }
 
@@ -364,28 +365,77 @@ contract OwnerRecordTest is Helpers {
         proposeRemoval(a, signer, c);
     }
 
-    /// Decision 32: the first address waits 24 hours too, cancellable.
-    function test_theFirstWithdrawalAddressWaits24Hours() public {
+    /// D1 (deposit-first-deposit-design.md, amending decision 32): the first address takes effect at
+    /// once, due at its own block, and the next change settles it.
+    function test_theFirstWithdrawalAddressTakesEffectAtOnce() public {
         assertEq(a.withdrawalAddress(), address(0));
+        vm.expectEmit(address(a));
+        emit DepositAccountState.WithdrawalAddressProposed(DEST, vm.getBlockTimestamp());
         setWithdrawal(a, PASSKEY_A, DEST);
-        assertEq(a.withdrawalAddress(), address(0), "not at once");
+        assertEq(a.withdrawalAddress(), DEST, "at once");
         (address next, uint256 due) = a.pendingWithdrawalAddress();
-        assertEq(next, DEST);
-        assertEq(due, vm.getBlockTimestamp() + 24 hours);
-        vm.warp(due - 1);
-        assertEq(a.withdrawalAddress(), address(0));
-        vm.warp(due);
+        assertEq(next, address(0), "nothing pending");
+        assertEq(due, 0);
+        assertEq(a.version(), 2);
+        vm.expectEmit(address(a));
+        emit DepositAccountState.WithdrawalAddressSet(address(0), DEST, 2);
+        rec(a).publish(19); // any settling call
+    }
+
+    /// An immediate first address is never pending: there is nothing to cancel, by any credential.
+    function test_theFirstWithdrawalAddressCannotBeCancelled() public {
+        setWithdrawal(a, WALLET_A, DEST2);
+        uint256 due = vm.getBlockTimestamp();
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
+        this.cancelW(PASSKEY_A, DEST2, due);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
+        this.cancelW(WALLET_A, DEST2, due);
+        assertEq(a.withdrawalAddress(), DEST2);
+    }
+
+    /// Two proposals in the same block: the first is settled before the second (`_recordChange`
+    /// settles first, `_due` is `>=`), so only the first is immediate.
+    function test_aSecondProposalInTheFirstAddresssBlockWaits24Hours() public {
+        setWithdrawal(a, PASSKEY_A, DEST);
+        setWithdrawal(a, WALLET_A, DEST2);
         assertEq(a.withdrawalAddress(), DEST);
+        (address next, uint256 due) = a.pendingWithdrawalAddress();
+        assertEq(next, DEST2);
+        assertEq(due, vm.getBlockTimestamp() + 24 hours);
         assertEq(a.version(), 2);
     }
 
-    function test_theFirstWithdrawalAddressIsCancelled() public {
-        setWithdrawal(a, WALLET_A, DEST2); // a compromised web2, a blind signature
+    /// A later change is cancellable strictly before its due time, not at it (`_cancel` settles first).
+    function test_aLaterChangeIsCancellableOnlyBeforeItsDueTime() public {
+        setWithdrawal(a, PASSKEY_A, DEST);
+        setWithdrawal(a, WALLET_A, DEST2);
         (, uint256 due) = a.pendingWithdrawalAddress();
+        uint256 snap = vm.snapshotState();
+        vm.warp(due - 1);
         cancelWithdrawal(a, PASSKEY_A, DEST2, due);
-        vm.warp(due + 1);
-        assertEq(a.withdrawalAddress(), address(0));
-        assertEq(a.version(), 1);
+        assertEq(a.withdrawalAddress(), DEST);
+        vm.revertToState(snap);
+        vm.warp(due);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
+        this.cancelW(PASSKEY_A, DEST2, due);
+        assertEq(a.withdrawalAddress(), DEST2);
+    }
+
+    /// Residual R2 (§4.2), documented: whoever holds a credential in effect before the first address
+    /// lands sets it at once, and DLTX's later relay of the owner's signed one reverts `BadNonce`.
+    function test_residual_aCredentialHolderBeforeTheFirstAddressWinsIt() public {
+        // the owner's signed first address, held by DLTX, nonce 0 of the passkey
+        uint256 deadline = vm.getBlockTimestamp() + 7 days;
+        bytes32 d = typed(a, abi.encode(a.SET_WITHDRAWAL_ADDRESS_TYPEHASH(), DEST, uint256(0), deadline));
+        bytes memory owners = sign(PASSKEY_A, d);
+        // the thief holds the same passkey: theirs lands first
+        setWithdrawal(a, PASSKEY_A, DEST2);
+        assertEq(a.withdrawalAddress(), DEST2);
+        vm.expectRevert(DepositAccountState.BadNonce.selector);
+        rec(a).setWithdrawalAddress(DEST, 0, deadline, owners);
+        // and the owner's correction now waits, cancellable by the thief: the stand-off
+        setWithdrawal(a, WALLET_A, DEST);
+        assertEq(a.withdrawalAddress(), DEST2);
     }
 
     function test_aWithdrawalAddressChangeWaits24Hours() public {
@@ -409,13 +459,13 @@ contract OwnerRecordTest is Helpers {
         setWithdrawalNow(a, PASSKEY_A, DEST);
         setWithdrawal(a, WALLET_A, DEST2);
         (, uint256 due) = a.pendingWithdrawalAddress();
-        vm.expectRevert(DepositAccount.NothingPending.selector);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
         this.cancelW(PASSKEY_A, DEST, due); // names another change
         cancelWithdrawal(a, PASSKEY_A, DEST2, due);
         vm.warp(due + 1);
         assertEq(a.withdrawalAddress(), DEST);
         assertEq(a.version(), 2);
-        vm.expectRevert(DepositAccount.NothingPending.selector);
+        vm.expectRevert(DepositAccountState.NothingPending.selector);
         this.cancelW(PASSKEY_A, DEST2, due);
     }
 
@@ -424,7 +474,7 @@ contract OwnerRecordTest is Helpers {
     }
 
     function test_theWithdrawalAddressIsNeverZero() public {
-        vm.expectRevert(DepositAccount.ZeroAddress.selector);
+        vm.expectRevert(DepositAccountState.ZeroAddress.selector);
         this.setW(WALLET_A, address(0));
     }
 
@@ -437,14 +487,14 @@ contract OwnerRecordTest is Helpers {
     function test_aCopyRefusesASignedChange() public {
         vm.chainId(HYPEREVM);
         assertFalse(a.isHome());
-        vm.expectRevert(DepositAccount.NotHome.selector);
+        vm.expectRevert(DepositAccountState.NotHome.selector);
         this.add(WALLET_A, wallet(WALLET_B));
-        vm.expectRevert(DepositAccount.NotHome.selector);
+        vm.expectRevert(DepositAccountState.NotHome.selector);
         this.setW(WALLET_A, DEST);
-        vm.expectRevert(DepositAccount.NotHome.selector);
+        vm.expectRevert(DepositAccountState.NotHome.selector);
         this.remove(PASSKEY_A, wallet(WALLET_A));
-        vm.expectRevert(DepositAccount.NotHome.selector);
-        a.publish(3);
+        vm.expectRevert(DepositAccountState.NotHome.selector);
+        rec(a).publish(3);
     }
 
     function test_publishSendsTheWholeRecordToTheSameAddress() public {
@@ -452,7 +502,7 @@ contract OwnerRecordTest is Helpers {
         addNow(a, WALLET_A, passkey(PASSKEY_B));
         addCredential(a, WALLET_A, wallet(WALLET_B)); // pending: not in the record
         vm.prank(STRANGER);
-        a.publish(19);
+        rec(a).publish(19);
         assertEq(mt.lastDomain(), 19);
         assertEq(mt.lastRecipient(), self());
         assertEq(mt.lastCaller(), bytes32(0), "anyone relays");
@@ -465,8 +515,8 @@ contract OwnerRecordTest is Helpers {
         assertEq(v, 3);
         assertEq(w, DEST);
         assertEq(creds.length, 3);
-        vm.expectRevert(DepositAccount.BadDomain.selector);
-        a.publish(3);
+        vm.expectRevert(DepositAccountState.BadDomain.selector);
+        rec(a).publish(3);
     }
 
     /// What publish settles first: a change whose 24 hours passed with no transaction since.
@@ -474,7 +524,7 @@ contract OwnerRecordTest is Helpers {
         setWithdrawalNow(a, PASSKEY_A, DEST);
         setWithdrawal(a, PASSKEY_A, DEST2);
         vm.warp(vm.getBlockTimestamp() + 24 hours);
-        a.publish(0);
+        rec(a).publish(0);
         (, uint64 v,, address w,) = abi.decode(mt.body(), (bytes32, uint64, uint64, address, Credential[]));
         assertEq(v, 3);
         assertEq(w, DEST2);
@@ -482,10 +532,10 @@ contract OwnerRecordTest is Helpers {
 
     function test_aCopyAppliesTheHomesRecordAndIgnoresAnOlderOne() public {
         setWithdrawalNow(a, PASSKEY_A, DEST);
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory v1 = mt.body();
         addNow(a, WALLET_A, wallet(WALLET_B));
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory v2 = mt.body();
 
         toCopyAtGenesis();
@@ -510,7 +560,7 @@ contract OwnerRecordTest is Helpers {
     function test_theRecordIsCopiedToAvalanche() public {
         setWithdrawalNow(a, PASSKEY_A, DEST);
         addNow(a, WALLET_A, wallet(WALLET_B));
-        a.publish(1);
+        rec(a).publish(1);
         assertEq(mt.lastDomain(), 1);
         assertEq(mt.lastRecipient(), self());
         bytes memory body = mt.body();
@@ -525,13 +575,13 @@ contract OwnerRecordTest is Helpers {
         assertTrue(a.isCredential(wallet(WALLET_B)));
         bytes32 d = keccak256("x");
         assertTrue(a.checkOwnerSignature(d, signPasskey(PASSKEY_A, d)));
-        vm.expectRevert(DepositAccount.NotHome.selector);
+        vm.expectRevert(DepositAccountState.NotHome.selector);
         this.setW(PASSKEY_A, DEST2);
     }
 
     function deliver(bytes memory body) internal {
         vm.prank(MT);
-        assertTrue(a.handleReceiveFinalizedMessage(3, self(), 2000, body));
+        assertTrue(rec(a).handleReceiveFinalizedMessage(3, self(), 2000, body));
     }
 
     /// The verification's second finding: a thief publishes while still in the record; where no copy
@@ -547,14 +597,14 @@ contract OwnerRecordTest is Helpers {
         addNow(h, WALLET_A, wallet(WALLET_B)); // the thief's credential, in effect
         setWithdrawalNow(h, WALLET_B, DEST2); // and its address
         vm.prank(STRANGER);
-        h.publish(19); // sent while the thief is in the record: no copy on 19 yet
+        rec(h).publish(19); // sent while the thief is in the record: no copy on 19 yet
         bytes memory stale = mt.body();
         proposeRemoval(h, PASSKEY_A, wallet(WALLET_B));
         setWithdrawal(h, PASSKEY_A, DEST);
         vm.warp(vm.getBlockTimestamp() + 24 hours);
         assertFalse(h.isCredential(wallet(WALLET_B)));
         uint256 t = vm.getBlockTimestamp();
-        h.publish(19); // the engine deploys the copy first, then publishes: same second here
+        rec(h).publish(19); // the engine deploys the copy first, then publishes: same second here
         bytes memory fresh = mt.body();
 
         vm.revertToState(before);
@@ -563,56 +613,56 @@ contract OwnerRecordTest is Helpers {
         DepositAccount copy = DepositAccount(f.deploy(bob, owners)); // the copy, deployed after
         bytes32 me = bytes32(uint256(uint160(address(copy))));
         vm.prank(MT);
-        assertTrue(copy.handleReceiveFinalizedMessage(3, me, 2000, stale), "consumed, not reverted");
+        assertTrue(rec(copy).handleReceiveFinalizedMessage(3, me, 2000, stale), "consumed, not reverted");
         assertFalse(copy.synced(), "the stale record is not its first");
         bytes32 d = keccak256("x");
         assertFalse(copy.checkOwnerSignature(d, signWallet(WALLET_B, d)));
         assertEq(copy.withdrawalAddress(), address(0));
 
         vm.prank(MT);
-        copy.handleReceiveFinalizedMessage(3, me, 2000, fresh); // the home's publish, sent at t
+        rec(copy).handleReceiveFinalizedMessage(3, me, 2000, fresh); // the home's publish, sent at t
         assertTrue(copy.synced());
         assertEq(copy.version(), 5);
         assertEq(copy.withdrawalAddress(), DEST);
         assertFalse(copy.checkOwnerSignature(d, signWallet(WALLET_B, d)), "the removed credential");
         // and once in sync, the stale one (a lower version) is ignored
         vm.prank(MT);
-        copy.handleReceiveFinalizedMessage(3, me, 2000, stale);
+        rec(copy).handleReceiveFinalizedMessage(3, me, 2000, stale);
         assertEq(copy.withdrawalAddress(), DEST);
     }
 
     function test_aCopyAcceptsOnlyTheHomesOwnFinalizedMessage() public {
         setWithdrawal(a, PASSKEY_A, DEST);
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory body = mt.body();
         vm.chainId(HYPEREVM);
-        vm.expectRevert(DepositAccount.NotTransmitter.selector);
+        vm.expectRevert(DepositAccountState.NotTransmitter.selector);
         vm.prank(STRANGER);
-        a.handleReceiveFinalizedMessage(3, self(), 2000, body);
+        rec(a).handleReceiveFinalizedMessage(3, self(), 2000, body);
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotHomeMessage.selector);
-        a.handleReceiveFinalizedMessage(0, self(), 2000, body); // another domain
+        vm.expectRevert(DepositAccountState.NotHomeMessage.selector);
+        rec(a).handleReceiveFinalizedMessage(0, self(), 2000, body); // another domain
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotHomeMessage.selector);
-        a.handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(STRANGER))), 2000, body); // another sender
+        vm.expectRevert(DepositAccountState.NotHomeMessage.selector);
+        rec(a).handleReceiveFinalizedMessage(3, bytes32(uint256(uint160(STRANGER))), 2000, body); // another sender
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotFinalized.selector);
-        a.handleReceiveFinalizedMessage(3, self(), 1000, body);
+        vm.expectRevert(DepositAccountState.NotFinalized.selector);
+        rec(a).handleReceiveFinalizedMessage(3, self(), 1000, body);
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotFinalized.selector);
-        a.handleReceiveUnfinalizedMessage(3, self(), 2000, body);
+        vm.expectRevert(DepositAccountState.NotFinalized.selector);
+        rec(a).handleReceiveUnfinalizedMessage(3, self(), 2000, body);
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.BadMessage.selector);
-        a.handleReceiveFinalizedMessage(3, self(), 2000, abi.encode(bytes32("other"), uint64(9), uint64(vm.getBlockTimestamp()), DEST, one(wallet(WALLET_B))));
+        vm.expectRevert(DepositAccountState.BadMessage.selector);
+        rec(a).handleReceiveFinalizedMessage(3, self(), 2000, abi.encode(bytes32("other"), uint64(9), uint64(vm.getBlockTimestamp()), DEST, one(wallet(WALLET_B))));
     }
 
     function test_theHomeAcceptsNoRecordMessage() public {
         setWithdrawal(a, PASSKEY_A, DEST);
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory body = mt.body();
         vm.prank(MT);
-        vm.expectRevert(DepositAccount.NotCopy.selector);
-        a.handleReceiveFinalizedMessage(3, self(), 2000, body);
+        vm.expectRevert(DepositAccountState.NotCopy.selector);
+        rec(a).handleReceiveFinalizedMessage(3, self(), 2000, body);
     }
 
     /// §7.3: a removed credential stays valid on a copy until the publish arrives.
@@ -620,7 +670,7 @@ contract OwnerRecordTest is Helpers {
         uint256 genesis = vm.snapshotState();
         proposeRemoval(a, PASSKEY_A, wallet(WALLET_A));
         vm.warp(vm.getBlockTimestamp() + 24 hours);
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory body = mt.body();
         uint256 t = vm.getBlockTimestamp();
         vm.revertToState(genesis);
@@ -640,13 +690,13 @@ contract OwnerRecordTest is Helpers {
     function test_aFreshCopyTrustsNoCredentialUntilTheRecordArrives() public {
         proposeRemoval(a, PASSKEY_A, wallet(WALLET_A));
         vm.warp(vm.getBlockTimestamp() + 8 days);
-        a.publish(19);
+        rec(a).publish(19);
         bytes memory body = mt.body();
         uint256 t = vm.getBlockTimestamp();
         toCopyAtGenesis(); // the account at its genesis, as a chain where it is deployed now
         vm.warp(t);
         vm.prank(TRANSFER);
-        f.checkIn(); // the transfer key alive: the hatch shut
+        f.checkIn(supported()); // the transfer key alive: the hatch shut
         DepositAccount copy = DepositAccount(f.deploy(ALICE, one(wallet(WALLET_A))));
         assertEq(address(copy), address(a));
         assertFalse(copy.synced());
@@ -655,10 +705,10 @@ contract OwnerRecordTest is Helpers {
         assertFalse(copy.checkOwnerSignature(d, signPasskey(PASSKEY_A, d)), "even a kept one");
         assertFalse(copy.isCredential(wallet(WALLET_A)));
         (uint256 nonce, uint256 deadline, bytes memory sig) = revokeSig(copy, WALLET_A, true);
-        vm.expectRevert(DepositAccount.NotSynced.selector);
+        vm.expectRevert(DepositAccountState.NotSynced.selector);
         copy.revokeTransfer(nonce, deadline, sig);
         vm.prank(vm.addr(WALLET_A));
-        vm.expectRevert(DepositAccount.NotSynced.selector);
+        vm.expectRevert(DepositAccountState.NotSynced.selector);
         copy.withdraw(address(0), 0);
 
         deliver(body);
@@ -691,12 +741,12 @@ contract OwnerRecordTest is Helpers {
         (uint256 nonce, uint256 deadline, bytes memory sig) = revokeSig(a, WALLET_A, true);
         vm.chainId(HYPEREVM);
         deliverRecord(a, 0, address(0), two(wallet(WALLET_A), passkey(PASSKEY_A)));
-        vm.expectRevert(DepositAccount.BadSignature.selector);
+        vm.expectRevert(DepositAccountState.BadSignature.selector);
         a.revokeTransfer(nonce, deadline, sig);
         (nonce, deadline, sig) = revokeSig(a, WALLET_A, true);
         a.revokeTransfer(nonce, deadline, sig);
         assertTrue(a.transferRevoked());
-        vm.expectRevert(DepositAccount.BadNonce.selector);
+        vm.expectRevert(DepositAccountState.BadNonce.selector);
         a.revokeTransfer(nonce, deadline, sig);
     }
 

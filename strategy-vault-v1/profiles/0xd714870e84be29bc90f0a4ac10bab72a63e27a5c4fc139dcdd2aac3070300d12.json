@@ -1,0 +1,64 @@
+{
+  "$comment": "The BTC (WBTC) asset profile (asset-profiles-design.md §3.1), as both registries' genesis opens it (DeployV1.genesisProfiles); its id is keccak256(abi.encode(profile)) with the fields in this order (src/Types.sol AssetProfile), pinned in test/OwnerDigestsV1.t.sol. Every read is Arbitrum block 517,200,797 / HyperEVM at 2026-10-22, read-only; AP-3's on-chain checks run in each registry's constructor (test/AssetLegBtc.fork.t.sol, HyperCoreLegV1.fork.t.sol). Constructor data of the registry (the genesis): the release review (AP-12: each feed's provenance in Chainlink's directory, the collateral's tie to its perp) must be done BEFORE the registry is deployed, since it opens the profile at once.",
+  "id": "0xd714870e84be29bc90f0a4ac10bab72a63e27a5c4fc139dcdd2aac3070300d12",
+  "fields": [
+    ["asset", "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f", "WBTC on Arbitrum One"],
+    ["assetDecimals", 8, "WBTC.decimals()"],
+    [
+      "aAsset",
+      "0x078f358208685046a11C85e8ad32895DED33A249",
+      "AAVE Pool.getReserveData(WBTC).aTokenAddress"
+    ],
+    [
+      "swapPool",
+      "0x0E4831319A50228B9e450861297aB92dee15B44F",
+      "UniswapV3Factory(SwapRouter02(receiver.ROUTER()).factory()).getPool(WBTC, USDC, 500)"
+    ],
+    ["swapFee", 500, "the 0.05 % tier: the deepest direct WBTC/USDC pool (§7.3)"],
+    ["assetIsToken0", true, "WBTC 0x2f2a… < USDC 0xaf88…"],
+    ["holdingAsset", "keccak256(\"dltx.asset.WBTC\")", "Assets.WBTC"],
+    [
+      "minBoundBp",
+      60,
+      "fee 5 + flash premium 5 + a band-sized repay's impact ≈ 30 + margin 20 (§3.2; re-measured in slice 8)"
+    ],
+    [
+      "rateFeed",
+      "0x0017abAc5b6f291F9164e35B1234CA1D697f9CF4",
+      "Chainlink WBTC / BTC on Arbitrum One (provenance: Chainlink's directory, AP-12)"
+    ],
+    ["rateDescription", "WBTC / BTC", "rateFeed.description()"],
+    ["rateMaxAge", 90000, "the feed's 24 h heartbeat + 1 h"],
+    ["perp", 0, "Hyperliquid DEX 0 index of BTC"],
+    ["perpCoin", "BTC", "perpAssetInfo(0).coin (HyperEVM precompile 0x…080a)"],
+    ["szDecimals", 5, "perpAssetInfo(0).szDecimals"],
+    ["underlying", "BTC", "WBTC is BTC: the release review's (AP-12)"],
+    [
+      "shortAsset",
+      "keccak256(\"dltx.asset.BTC\")",
+      "derived: keccak256(\"dltx.asset.\" ‖ perpCoin) = Assets.BTC"
+    ],
+    [
+      "pins[0]",
+      {
+        "asset": "Assets.BTC",
+        "kind": 1,
+        "feed": "0x6ce185860a4963106506C203335A2910413708e9",
+        "baseFeed": "0x0000000000000000000000000000000000000000",
+        "maxAge": 3600
+      },
+      "Chainlink BTC / USD, as ETH / USD's 1 h (§3.6)"
+    ],
+    [
+      "pins[1]",
+      {
+        "asset": "Assets.WBTC",
+        "kind": 2,
+        "feed": "0x0017abAc5b6f291F9164e35B1234CA1D697f9CF4",
+        "baseFeed": "0x6ce185860a4963106506C203335A2910413708e9",
+        "maxAge": 90000
+      },
+      "WBTC / BTC × BTC / USD, the slower feed's maxAge (Q4)"
+    ]
+  ]
+}

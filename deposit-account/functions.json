@@ -20,51 +20,21 @@
     "Credential": "One owner credential. A wallet: `kind` 1, `x` its address left-padded, `y` zero. A passkey: `kind` 2, `x` and `y` the coordinates of its P-256 public key.",
     "StrategyGrant": "The owner's authorisation to fund one strategy contract: `allowance` of USDC on the chain of `domain`, for the contract of `vaultFactory` with `strategyId` and `configHash`. Every field is signed; `nonce` is the signing credential's record-change nonce and `deadline` the signature's expiry.",
     "Withdrawal": "A withdrawal the owner signs, every field included: `amount` of `token` (zero: the native coin) to `to`, with at most `maxFee` of it to `feeRecipient`. `to` and `feeRecipient` must still be the withdrawal address and the factory's fee recipient in effect when it executes. `nonce` is the signing credential's nonce on this chain and `deadline` the signature's expiry.",
-    "Grant": "An authorisation the home accepted, as `grant` returns it: the factory, the chain, whether its allowance was applied, the strategy id, the configuration hash, the allowance, and the trust epoch it was granted under (a cancelled trust voids it)."
+    "Grant": "An authorisation the home accepted, as `grant` returns it: the factory, the chain, whether its allowance was applied, the strategy id, the configuration hash, the allowance, and the trust epoch it was granted under (a cancelled trust voids it).",
+    "Proposal": "A version the recovery key proposed: `due`, when it may be accepted (zero: none pending), and `codeHash`, the implementation's code hash at the proposal, which acceptance checks again."
   },
   "contracts": [
     {
       "name": "DepositAccount",
       "source": "src/DepositAccount.sol",
+      "module": "DepositAccountRecord",
+      "moduleFallback": "open",
       "title": "The deposit contract",
       "brief": "Each user's own contract: their balance and their owner record, at the same address on every supported chain.",
       "summary": "Each user's own contract, at the same address on every supported chain. It holds the user's balance and the owner record: one to four credentials (passkeys or wallets) and the withdrawal address. The copy on Arbitrum is the **home**: every change to the record is signed and accepted there, waits 24 hours, and reaches the other chains' copies by a Circle message the home sends; a copy trusts the record it holds for 30 days after the home sent it, and the same record sent again renews it. Money leaves only to the withdrawal address, to a strategy contract the owner authorised (within the amount signed for), as a fee the owner signed, into the pinned USDT to USDC pool, or by Circle's bridge to this same address on another supported chain. There is no other call: no arbitrary call, no upgrade, no admin.",
       "functions": {
-        "WALLET": {
-          "does": "The credential kind of a wallet: `x` is its address, left-padded; `y` is zero."
-        },
-        "PASSKEY": {
-          "does": "The credential kind of a passkey: `x` and `y` are its P-256 public key."
-        },
-        "MAX_CREDENTIALS": {
-          "does": "The most credentials an owner holds, pending additions counted."
-        },
-        "MAX_SIGNED_FEE": {
-          "does": "The most an owner-signed withdrawal pays as its fee, whatever maximum the owner signed: 50 USDC (50,000,000 units), in this chain's USDC or its pinned USDT. A withdrawal of any other token, the native coin included, pays no fee."
-        },
         "DELAY": {
-          "does": "How long an addition, a removal, a withdrawal-address change and a new factory trust wait before they take effect."
-        },
-        "HOME_CHAIN_ID": {
-          "does": "Arbitrum One: the chain whose copy is the home of the owner record."
-        },
-        "HOME_DOMAIN": {
-          "does": "Arbitrum's Circle (CCTP) domain."
-        },
-        "FINALIZED": {
-          "does": "Circle's finality threshold for a finalized message: the only one this contract sends or accepts, and the one its bridge transfers ask for."
-        },
-        "MESSAGE_TRANSMITTER": {
-          "does": "Circle's CCTP V2 MessageTransmitterV2, the same address on every chain: it carries the home's messages to the copies."
-        },
-        "TOKEN_MESSENGER": {
-          "does": "Circle's CCTP V2 TokenMessengerV2, the same address on every chain: it burns USDC for the bridge."
-        },
-        "CONVERSION_BOUND_BP": {
-          "does": "The conversion's bound, in basis points under 1 USD per USDT: a swap never accepts less than 998 USDC per 1,000 USDT."
-        },
-        "BURN_FEE_CAP_BP": {
-          "does": "The most Circle's fees may take, in basis points (0.1%): of each bridge transfer's amount, and, per UTC day, of the highest USDC balance seen at a fee-paying burn that day."
+          "does": "How long an addition, a removal, a later withdrawal-address change and a new factory trust wait before they take effect. The first withdrawal address does not wait, nor DLTX's pinned vault factory's first trust on Arbitrum or HyperEVM."
         },
         "RECORD_TTL": {
           "does": "How long a copy trusts the owner record it holds after the home sent it: 30 days. Past it the copy reads as unsynced (no owner signature, no local action, no withdrawal, no withdrawal address) until the home's record arrives again, even unchanged. It bounds how long a credential removed or an address replaced at the home stays usable on a chain the change has not reached."
@@ -180,7 +150,7 @@
           "does": "The credentials in effect now: an addition past its 24 hours counts, a removal past its 24 hours does not, settled in storage or not. On a copy not yet synced, the first owner set, which it does not trust."
         },
         "withdrawalAddress": {
-          "does": "The withdrawal address in effect now: zero until one is set and its 24 hours have passed, and zero on an unsynced copy (never reached, or its record older than 30 days)."
+          "does": "The withdrawal address in effect now: zero until the first one is set (it takes effect at once), the pending one once its 24 hours have passed, and zero on an unsynced copy (never reached, or its record older than 30 days)."
         },
         "pendingWithdrawalAddress": {
           "does": "A withdrawal-address change still waiting for its 24 hours, and when it takes effect (zeros if none).",
@@ -256,7 +226,7 @@
         },
         "setWithdrawalAddress": {
           "caller": "owner",
-          "does": "Proposes the withdrawal address, the first one too. It takes effect 24 hours later unless cancelled; a new proposal replaces a pending one and restarts its 24 hours.",
+          "does": "Sets the withdrawal address. The first one, while none has ever been in effect, takes effect at once. A later one is proposed and takes effect 24 hours later unless cancelled; a new proposal replaces a pending one and restarts its 24 hours.",
           "who": "The owner: a record change signed by a credential in effect, with that credential's own record nonce.",
           "when": "At the home only, before the signature's deadline.",
           "checks": [
@@ -268,9 +238,9 @@
         },
         "cancelWithdrawalAddress": {
           "caller": "owner",
-          "does": "Cancels a pending withdrawal-address change.",
+          "does": "Cancels a pending withdrawal-address change. The first address is never pending, so it cannot be cancelled.",
           "who": "The owner: signed by any credential in effect. No nonce: the message names the address and its due time.",
-          "when": "At the home only, before the change takes effect and before the signature's deadline.",
+          "when": "At the home only, strictly before the change takes effect, and before the signature's deadline.",
           "params": {
             "next": "The pending withdrawal address being cancelled."
           }
@@ -321,7 +291,7 @@
         },
         "authoriseStrategy": {
           "caller": "owner",
-          "does": "Authorises funding one strategy contract: an amount of USDC on one supported chain, for the contract of one factory, strategy id and configuration hash. It gets an id. A factory not yet trusted for that chain becomes trusted 24 hours after the first authorisation naming it, cancellable until then.",
+          "does": "Authorises funding one strategy contract: an amount of USDC on one supported chain, for the contract of one factory, strategy id and configuration hash. It gets an id. A factory not yet trusted for that chain becomes trusted 24 hours after the first authorisation naming it, cancellable until then, except DLTX's pinned vault factory on Arbitrum or HyperEVM, trusted at once (for Arbitrum, the amount is then added in the same call).",
           "who": "The owner: a local action signed by a credential in effect, with that credential's own local nonce.",
           "when": "At the home only, before the signature's deadline.",
           "checks": [
@@ -358,20 +328,22 @@
           "caller": "owner",
           "does": "Cancels a factory's pending trust for one chain, and with it every authorisation granted under that trust, for good. A trust lets the transfer key fund the contracts that factory says are this account's, within each amount signed for them; this contract does not check the factory's code, so a trust the owner did not mean is cancelled here within its 24 hours.",
           "who": "The owner: signed by any credential in effect. No nonce: the message names the factory, the chain and the due time.",
-          "when": "At the home only, before the trust takes effect and before the signature's deadline. Once in effect, a trust is permanent.",
+          "when": "At the home only, strictly before the trust takes effect, and before the signature's deadline. Once in effect, a trust is permanent; the pinned factory's trust on Arbitrum or HyperEVM is in effect at once, so it cannot be cancelled.",
           "params": {
             "domain": "The chain of the pending trust, by its CCTP domain number (Ethereum 0, Avalanche 1, OP Mainnet 2, Arbitrum 3, Base 6, Polygon 7, HyperEVM 19)."
           }
         },
         "withdraw": {
           "caller": "transfer-key",
-          "does": "Pays an amount of a token (zero: the chain's native coin) to the withdrawal address, with no fee.",
+          "does": "Pays an amount of a token (zero: the chain's native coin) to the withdrawal address. When the owner's own wallet calls it, the flat 1 USD exit fee in the chain's USDC or its pinned USDT goes to the fee recipient; the transfer key's and the escape hatch's withdrawals pay no fee.",
           "who": "A wallet credential in effect, calling from its own address; the transfer key unless the owner revoked it on this chain; and **anyone** once the deposit factory's transfer key has not checked in for 7 days (the escape hatch).",
           "when": "Once a withdrawal address is in effect on this chain, and on a copy only while it is synced (its record sent by the home within the last 30 days). An unsynced copy refuses every caller, the escape hatch included (`NotSynced`), until the home's record arrives again.",
           "checks": [
             "The destination is always the withdrawal address in effect: the caller chooses only the token and the amount.",
             "On a copy whose record is older than 30 days, it reverts for every caller: a withdrawal never goes to an address the home has since replaced for longer than that.",
-            "The native coin can reach the address before the contract exists there, or be forced in; the contract refuses a plain transfer once it exists."
+            "The native coin can reach the address before the contract exists there, or be forced in; the contract refuses a plain transfer once it exists.",
+            "A wallet credential's own withdrawal of USDC or USDT, with a fee recipient set, must be above the 1 USD fee (`AmountNotAboveFee`: nothing moves), unless it is the whole balance, which then leaves free (so the owner can always empty the account). If the fee's transfer fails (a blacklisted recipient), the withdrawal goes ahead whole.",
+            "No caller but the owner pays a fee, so nobody can turn the owner's money into fees a dollar at a time."
           ],
           "params": {
             "token": "The token to pay out; zero for the chain's native coin.",
@@ -380,18 +352,16 @@
         },
         "withdrawSigned": {
           "caller": "owner",
-          "does": "The owner's signed withdrawal: the signed amount leaves, a fee of at most the signed maximum to the fee recipient and the rest to the withdrawal address.",
-          "who": "The owner: a local action signed by a credential in effect, with that credential's own local nonce. Anyone may submit it and chooses the fee, up to the signed maximum.",
+          "does": "The owner's signed withdrawal: the signed amount leaves, the flat 1 USD exit fee (USDC or the pinned USDT, when a fee recipient is set) to the fee recipient and the rest to the withdrawal address.",
+          "who": "The owner: a local action signed by a credential in effect, with that credential's own local nonce. Anyone may submit it; the submitter chooses nothing.",
           "when": "On any chain whose copy is synced (its record sent by the home within the last 30 days), before the signature's deadline. Revoking the transfer key does not stop it.",
           "checks": [
             "Every field is signed: token, amount, destination, maximum fee, fee recipient.",
             "The signed destination must still be the withdrawal address in effect, and the signed fee recipient the deposit factory's in effect: a signature played after either changed reverts.",
-            "The fee is at most the signed maximum and at most the amount; no fee can be taken while the factory has no fee recipient.",
-            "The fee is also at most `MAX_SIGNED_FEE` (50 USDC) when the token is this chain's USDC or its pinned USDT, and zero for any other token, the native coin included: a maximum signed blind can't give the fee recipient more."
+            "For USDC and the pinned USDT the owner always signs a maximum fee of at least the 1 USD flat fee (`FeeAboveMax` otherwise, whether or not a fee turns out due); with a fee recipient set the amount must be above it (`AmountNotAboveFee`) unless it is the whole balance, which then leaves free. If the fee's transfer fails, the withdrawal goes ahead whole. Other tokens and the native coin pay none."
           ],
           "params": {
-            "w": "The withdrawal the owner signed (see `Withdrawal`).",
-            "fee": "The fee taken out of `w.amount` for the factory's fee recipient; at most `w.maxFee` and the compiled cap."
+            "w": "The withdrawal the owner signed (see `Withdrawal`)."
           }
         },
         "fund": {
@@ -472,6 +442,89 @@
             "usdc": "This chain's Circle USDC (zero where the account burns nothing).",
             "domain": "This chain's CCTP domain number."
           }
+        },
+        "EXIT_FEE": {
+          "does": "The flat fee of an exit the owner makes (its wallet's own withdraw, or its signed withdrawal), in the chain's USDC or its pinned USDT: 1 USD, compiled, never settable. Other tokens and the native coin pay none. Only when a fee recipient is set; an amount at or below it is then refused, and when the fee's transfer fails the withdrawal goes ahead whole."
+        },
+        "CODE_VERSION": {
+          "does": "This code's version in the factory's list: 1 for the genesis, n for the nth listed version. It is not the owner record's `version`, which an upgrade does not change."
+        },
+        "UPGRADE_TTL": {
+          "does": "How long after the home published it a copy still follows an upgrade message: 3 days. An older one is ignored, and the home's current version is published again."
+        },
+        "SCHEDULE_UPGRADE_TYPEHASH": {
+          "does": "The EIP-712 type hash of `ScheduleUpgrade(address implementation,uint256 nonce,uint256 deadline)`, a record change."
+        },
+        "CANCEL_UPGRADE_TYPEHASH": {
+          "does": "The EIP-712 type hash of `CancelUpgrade(address implementation,uint256 due,uint256 deadline)`, a cancellation (no nonce)."
+        },
+        "UPGRADE_TAG": {
+          "does": "The tag of the home's upgrade message to a copy, `keccak256(\"dltx.owner-upgrade.v1\")`; its format (tag, implementation, publishedAt) is frozen for every version."
+        },
+        "module": {
+          "does": "This version's record module: the contract whose functions (the record changes, the copies, the upgrade) this account runs in its own storage. Created before this code, its code hash checked by the constructor; never changeable."
+        },
+        "implementation": {
+          "does": "The code this account runs now (the ERC-1967 slot): the factory's genesis at deployment, then each version its owner moved it to."
+        },
+        "pendingUpgrade": {
+          "does": "The pending upgrade, zeros if none: its target, the target's listed version and when anyone may apply it. It stays cancellable after that time, until it is applied.",
+          "returns": {
+            "impl": "The implementation the account will move to (zero: none pending).",
+            "codeVersion": "Its version in the factory's list.",
+            "due": "When anyone may apply it, as a Unix time in seconds."
+          }
+        },
+        "removalPendingOf": {
+          "does": "Whether a credential has a removal proposed and not yet settled. Always false on a copy, where removals never happen. A strategy's upgrade path refuses such a credential as its scheduler.",
+          "params": {
+            "id": "The credential's id (`credentialId`)."
+          }
+        },
+        "fallback": {
+          "caller": "anyone",
+          "does": "Runs the record module's functions in this account's storage: the record changes and their cancellations, `publish`, Circle's message handlers, and the upgrade (`scheduleUpgrade`, `cancelUpgrade`, `applyUpgrade`, `publishUpgrade`). Any other selector is refused by the module.",
+          "who": "Anyone may call; each function it runs applies its own rule on who may call it.",
+          "checks": [
+            "It accepts no native coin."
+          ]
+        },
+        "scheduleUpgrade": {
+          "caller": "owner",
+          "does": "Schedules the account's move to a later listed version of its code, applied by anyone 24 hours later unless a credential cancels it first. One upgrade is pending at most and is never replaced: to change the target, cancel, then sign again.",
+          "who": "The owner: a record change signed by a credential in effect, with that credential's own record nonce; never DLTX, the transfer key or the recovery key.",
+          "when": "At the home only, before the signature's deadline, while no upgrade is pending.",
+          "checks": [
+            "The factory lists `impl` with a version above this one: forward only.",
+            "The signing credential has no removal pending."
+          ],
+          "params": {
+            "impl": "The listed implementation to move to."
+          }
+        },
+        "cancelUpgrade": {
+          "caller": "owner",
+          "does": "Cancels the pending upgrade.",
+          "who": "The owner: signed by any credential in effect, the scheduler included. No nonce: the message names the upgrade and its due time.",
+          "when": "At the home only, until the upgrade is applied (also after its due time), and before the signature's deadline.",
+          "params": {
+            "impl": "The pending upgrade's target."
+          }
+        },
+        "applyUpgrade": {
+          "caller": "anyone",
+          "does": "Applies the pending upgrade: first every change already due lands under the current code, then the account's code moves to the target (`Upgraded`). If the credential that scheduled it is no longer in effect or has a removal pending, the upgrade is cleared instead (`UpgradeCancelled`).",
+          "who": "Anyone; DLTX applies it once due and pays the gas.",
+          "when": "At the home only, once the upgrade is due, never during one of the account's own money calls."
+        },
+        "publishUpgrade": {
+          "caller": "anyone",
+          "does": "Sends the code this account runs now to this same address on another deposit chain, through Circle's message transmitter (no burn, no fee, finalized): the copy there follows it if its own factory lists that version and it is higher.",
+          "who": "Anyone.",
+          "when": "At the home only, as often as needed.",
+          "params": {
+            "domain": "The deposit chain's CCTP domain (not the home's)."
+          }
         }
       },
       "events": {
@@ -524,7 +577,7 @@
           }
         },
         "WithdrawalAddressProposed": {
-          "does": "A new withdrawal address was proposed; it takes effect at `due` unless cancelled.",
+          "does": "A new withdrawal address was proposed; it takes effect at `due` unless cancelled. For the first address `due` is the block time: in effect at once, never cancellable.",
           "params": {
             "next": "The proposed withdrawal address.",
             "due": "When it takes effect."
@@ -580,7 +633,7 @@
           }
         },
         "TrustProposed": {
-          "does": "A factory not yet trusted for a chain was named by an authorisation: it becomes trusted at `due` unless cancelled.",
+          "does": "A factory not yet trusted for a chain was named by an authorisation: it becomes trusted at `due` unless cancelled. For DLTX's pinned vault factory on Arbitrum or HyperEVM `due` is the block time: trusted at once, never cancellable.",
           "params": {
             "due": "When the trust takes effect.",
             "epoch": "How many times this factory's trust for this chain was proposed, this one included."
@@ -639,6 +692,41 @@
             "amount": "The USDC burned.",
             "maxFee": "The most Circle may keep from it."
           }
+        },
+        "UpgradeScheduled": {
+          "does": "The owner scheduled an upgrade.",
+          "params": {
+            "implementation": "The target.",
+            "version": "Its version in the factory's list.",
+            "due": "When anyone may apply it."
+          }
+        },
+        "UpgradeCancelled": {
+          "does": "The pending upgrade was cancelled by a credential, or cleared at its apply because its scheduler was no longer in effect or had a removal pending.",
+          "params": {
+            "implementation": "The target.",
+            "due": "Its due time."
+          }
+        },
+        "Upgraded": {
+          "does": "ERC-1967's event: the account's code moved, at its deployment (to the genesis), at the home's apply, or at a copy following its home.",
+          "params": {
+            "implementation": "The code it runs from now on."
+          }
+        },
+        "UpgradePublished": {
+          "does": "The home sent its current code to a copy.",
+          "params": {
+            "domain": "The copy's CCTP domain.",
+            "implementation": "The code sent."
+          }
+        },
+        "UpgradeIgnored": {
+          "does": "A copy consumed an upgrade message without moving: published before the copy existed, not after its last upgrade, more than 3 days ago, or not higher than its own version.",
+          "params": {
+            "implementation": "The code the message named.",
+            "publishedAt": "When the home published it."
+          }
         }
       },
       "errors": {
@@ -663,8 +751,7 @@
         "SelfCancel": "The credential being removed tried to cancel its own removal, which it may do only when that removal would leave it the last one standing.",
         "ZeroAddress": "The proposed withdrawal address is zero.",
         "NoWithdrawalAddress": "No withdrawal address is in effect on this chain yet.",
-        "FeeAboveMax": "The fee is above the signed maximum, above the amount, or above the compiled cap: `MAX_SIGNED_FEE` in this chain's USDC or pinned USDT, zero in any other token.",
-        "NoFeeRecipient": "A fee was asked while the factory has no fee recipient.",
+        "FeeAboveMax": "A signed withdrawal of USDC or the pinned USDT named a maximum fee below the 1 USD exit fee.",
         "NotOwnVault": "The strategy contract does not exist, or its factory does not register it to this account.",
         "NotTrusted": "The factory is not trusted by this account for this chain (yet, or any more).",
         "NoGrant": "No authorisation has this id.",
@@ -683,7 +770,12 @@
         "BadMessage": "The message is malformed: too short, of an unknown kind, or with an invalid record.",
         "NotSynced": "This copy has not received the home's owner record, or the one it holds was sent more than 30 days ago (`RECORD_TTL`), so it cannot check a signature or let money leave until the home's record arrives again.",
         "NotWithdrawalAddress": "The signed withdrawal names an address that is not the withdrawal address in effect.",
-        "NotFeeRecipient": "The signed withdrawal names a fee recipient that is not the factory's in effect."
+        "NotFeeRecipient": "The signed withdrawal names a fee recipient that is not the factory's in effect.",
+        "AmountNotAboveFee": "An owner's withdrawal of USDC or the pinned USDT, with a fee recipient set, was at or below the 1 USD exit fee and not the whole balance: nothing moves, the money stays (the whole balance at or below the fee leaves free).",
+        "BadModule": "At construction: the record module has no code or not the code hash given.",
+        "BadImplementation": "An upgrade names an implementation this chain's factory does not list, or (at the home) one not above the account's version. At a copy the message reverts and stays relayable.",
+        "RemovalPending": "The credential scheduling an upgrade has a removal pending.",
+        "NotDue": "The pending upgrade's 24 hours have not passed."
       }
     },
     {
@@ -691,13 +783,10 @@
       "source": "src/DepositFactory.sol",
       "title": "The deposit factory",
       "brief": "Creates each user's deposit contract, and holds DLTX's transfer key and offline recovery key for them.",
-      "summary": "Creates each user's deposit contract, at an address computed from the user's id and their first owner set, the same on every chain, and holds DLTX's keys for them: the transfer key, which must check in daily, and the offline recovery key. Its only constructor argument is the recovery key. It holds no money and names no strategy contract factory: each account trusts the factories its owner authorises.",
+      "summary": "Creates each user's deposit contract, at an address computed from the user's id and their first owner set, the same on every chain, and holds DLTX's keys for them: the transfer key, which must check in daily, and the offline recovery key. Its constructor creates the genesis, version 1 of the deposit contract, on which every account is deployed; the recovery key alone lists later versions, behind a public 7-day delay, and each owner moves their own account. Its only constructor argument is the recovery key. It holds no money and names no strategy contract factory: each account trusts the factories its owner authorises.",
       "functions": {
         "STOP_AFTER": {
           "does": "How long the transfer key may go without checking in before the escape hatch opens."
-        },
-        "implementation": {
-          "does": "The deposit contract's code every account is a minimal proxy (EIP-1167) of, created by this factory's constructor."
         },
         "transferKey": {
           "does": "DLTX's transfer key on this chain (zero until the recovery key sets it)."
@@ -712,7 +801,10 @@
           "does": "Where the fee of an owner-signed withdrawal goes; zero means no fee can be taken."
         },
         "lastCheckIn": {
-          "does": "The transfer key's last check-in; the factory's deployment until the first."
+          "does": "A version's last check-in: its listing until the first (the genesis: the factory's deployment).",
+          "params": {
+            "version": "The version."
+          }
         },
         "saltOf": {
           "does": "The CREATE2 salt of a user's account: the hash of their id and their first owner set, in order."
@@ -743,12 +835,21 @@
         },
         "checkIn": {
           "caller": "transfer-key",
-          "does": "Resets the escape hatch's 7-day clock.",
+          "does": "Resets the escape hatch's 7-day clock of each version named.",
           "who": "The transfer key only.",
-          "when": "Daily, whatever the accounts need."
+          "when": "Daily, for each version DLTX still supports; a version's support ends by leaving it out. The genesis is checked in for the factory's whole life.",
+          "checks": [
+            "Each version is listed."
+          ],
+          "params": {
+            "versions_": "The listed versions checked in."
+          }
         },
         "stopped": {
-          "does": "Whether 7 days have passed without a check-in: anyone may then have any account on this chain pay its withdrawal address."
+          "does": "Whether 7 days have passed without a check-in of a version: anyone may then have any account on that version pay its withdrawal address. True for a number not listed.",
+          "params": {
+            "version": "The version (an account asks its own `CODE_VERSION`)."
+          }
         },
         "setFeeRecipient": {
           "caller": "recovery",
@@ -774,6 +875,81 @@
           "does": "Completes the handover: the proposed key becomes the recovery key.",
           "who": "The proposed successor only, which proves it can sign.",
           "when": "After `proposeRecovery`."
+        },
+        "LISTING_DELAY": {
+          "does": "How long a proposed version waits before the recovery key may accept it: 7 days, public from its proposal."
+        },
+        "MAX_SUCCESSIONS": {
+          "does": "The most factory successions between this factory and a listed version's own factory: 8."
+        },
+        "predecessor": {
+          "does": "The factory this one continues: none (zero) for this one. A successor factory names its predecessor, which lets the predecessor list a version that names the successor."
+        },
+        "genesis": {
+          "does": "Version 1 of the deposit contract, created by this factory's constructor: the code every account is deployed on, whoever deploys it and whatever is listed since."
+        },
+        "proxyImplementation": {
+          "does": "What a proxy created by this factory runs first: always the genesis."
+        },
+        "versionOf": {
+          "does": "The listed version of an implementation (1 for the genesis), zero for an unlisted address.",
+          "params": {
+            "implementation": "The implementation's address."
+          }
+        },
+        "proposals": {
+          "does": "A pending listing: when the recovery key may accept it (zero: none) and the code hash it was proposed with.",
+          "params": {
+            "implementation": "The proposed implementation."
+          }
+        },
+        "versions": {
+          "does": "The highest listed version."
+        },
+        "implementationAt": {
+          "does": "The implementation of a listed version; reverts for a number not listed.",
+          "params": {
+            "n": "The version, from 1."
+          }
+        },
+        "latest": {
+          "does": "The last listed version's implementation: what the web may offer once DLTX released it, never what `deploy` uses."
+        },
+        "proposeImplementation": {
+          "caller": "recovery",
+          "does": "Proposes a later version of the deposit contract, acceptable 7 days later. Several proposals may run at once.",
+          "who": "The recovery key only.",
+          "when": "Any time.",
+          "checks": [
+            "The implementation has code, is not listed and not already proposed.",
+            "It names this factory as its own, or a later factory descending from it (each naming the one before as its predecessor, at most `MAX_SUCCESSIONS` steps), and so does its module.",
+            "Its `CODE_VERSION` is above every listed version, and its module's is the same (the account's forward-only check reads the module's)."
+          ],
+          "params": {
+            "impl": "The implementation proposed."
+          }
+        },
+        "withdrawImplementation": {
+          "caller": "recovery",
+          "does": "Withdraws a pending proposal.",
+          "who": "The recovery key only.",
+          "when": "Before it is accepted.",
+          "params": {
+            "impl": "The proposed implementation."
+          }
+        },
+        "acceptImplementation": {
+          "caller": "recovery",
+          "does": "Lists a proposed version, as the next number, and starts its check-in clock. Nothing ever removes a listed version.",
+          "who": "The recovery key only.",
+          "when": "At or after the proposal's due time, in version order.",
+          "checks": [
+            "Its code hash is the one proposed.",
+            "Its `CODE_VERSION` is the next number."
+          ],
+          "params": {
+            "impl": "The proposed implementation."
+          }
         }
       },
       "events": {
@@ -793,9 +969,10 @@
           }
         },
         "CheckedIn": {
-          "does": "The transfer key checked in, restarting the escape hatch's 7-day clock.",
+          "does": "The transfer key checked a version in, restarting its escape hatch's 7-day clock.",
           "params": {
             "key": "The transfer key.",
+            "version": "The version checked in.",
             "at": "When, as a Unix time in seconds."
           }
         },
@@ -819,13 +996,67 @@
             "previous": "The recovery key until now.",
             "next": "The recovery key from now on."
           }
+        },
+        "ImplementationProposed": {
+          "does": "The recovery key proposed a later version: public 7 days before it can be listed.",
+          "params": {
+            "implementation": "The implementation proposed.",
+            "codeVersion": "Its `CODE_VERSION`.",
+            "codeHash": "Its code hash, which acceptance checks again.",
+            "due": "When it may be accepted."
+          }
+        },
+        "ImplementationWithdrawn": {
+          "does": "A pending proposal was withdrawn.",
+          "params": {
+            "implementation": "The implementation."
+          }
+        },
+        "ImplementationListed": {
+          "does": "A version was listed: the genesis by the constructor, a later one by the recovery key's acceptance.",
+          "params": {
+            "implementation": "The implementation.",
+            "version": "Its number."
+          }
         }
       },
       "errors": {
         "NotAllowed": "The caller is not the key this call needs: the recovery key, the transfer key, or the proposed successor.",
         "ZeroAddress": "A key was set to zero, at deployment or after.",
-        "DeployFailed": "The deposit contract was not created at its expected address."
+        "DeployFailed": "The deposit contract was not created at its expected address.",
+        "BadImplementation": "A proposal names an address with no code, an implementation or module of another factory, or code that changed since its proposal.",
+        "AlreadyListed": "The implementation is already listed.",
+        "AlreadyPending": "The implementation is already proposed: no silent restart.",
+        "NothingPending": "No proposal for that implementation.",
+        "NotDue": "The proposal's 7 days have not passed.",
+        "BadVersion": "A version number out of order: a proposal not above the list, an acceptance not the next number, a check-in or `implementationAt` of a number not listed."
       }
+    },
+    {
+      "name": "DepositProxy",
+      "source": "src/DepositProxy.sol",
+      "title": "The account proxy",
+      "brief": "The fixed ERC-1967 proxy every deposit contract and every strategy contract is: it runs the code its owner chose, and has no function of its own.",
+      "summary": "The fixed ERC-1967 proxy each user's deposit contract is, at the address its factory computes from the user's id and first owner set; each strategy's hub and legs are the same proxy, made by the combination factory. Its address never depends on the code it runs. It asks its maker, once, for the code to run first (the deposit factory's genesis), then delegates every call to the code in its ERC-1967 slot, which only the owner's upgrade moves. It has no admin and no function of its own.",
+      "functions": {
+        "fallback": {
+          "caller": "anyone",
+          "does": "Runs the call in the code the ERC-1967 slot names, in this contract's storage, and returns or reverts as that code does.",
+          "who": "Anyone; the code it runs applies its own rules.",
+          "checks": [
+            "Payable, so a later version may accept the native coin; version 1 of the deposit contract has no payable function, so a plain transfer reverts there."
+          ]
+        }
+      },
+      "events": {
+        "Upgraded": {
+          "does": "ERC-1967's event: the proxy was created running this code.",
+          "params": {
+            "implementation": "The code it runs first."
+          }
+        }
+      },
+      "errors": {}
     }
   ]
 }

@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {DepositAccount} from "../src/DepositAccount.sol";
+import {DepositAccountState} from "../src/DepositAccountState.sol";
 import {DepositFactory} from "../src/DepositFactory.sol";
 import {Helpers} from "./Helpers.sol";
 import {
@@ -60,7 +61,8 @@ interface IToken {
  * funds the hub only, the owner's `BeginExit` (no chain id, one signature for every member) enters the exit,
  * and the hub's exit pays the withdrawal address. A passkey assertion without user verification is refused
  * across the seam. Not covered here (single chain): the Hyperliquid leg on HyperEVM's copy, unsynced and
- * stale copies (the account's own suites cover them).
+ * stale copies (the account's own suites cover them). The account is a proxy on the genesis, and again
+ * moved by its owner to the test version 2 (owner-upgrades-design.md §9).
  */
 contract SeamTest is Helpers {
     string constant DIR = "test/fixtures/strategy-vault-pinned/";
@@ -205,19 +207,43 @@ contract SeamTest is Helpers {
 
     function test_seam_walletOwner() public {
         if (!_fork()) return vm.skip(true);
-        _seam(WALLET_A);
+        _seam(WALLET_A, false);
     }
 
     function test_seam_passkeyOwner() public {
         if (!_fork()) return vm.skip(true);
-        _seam(PASSKEY_A);
+        _seam(PASSKEY_A, false);
     }
 
-    function _seam(uint256 pk) internal {
+    /// owner-upgrades-design.md §9: the same seam on an account its owner moved to the test version 2.
+    function test_seam_walletOwnerOnVersion2() public {
+        if (!_fork()) return vm.skip(true);
+        _seam(WALLET_A, true);
+    }
+
+    function test_seam_passkeyOwnerOnVersion2() public {
+        if (!_fork()) return vm.skip(true);
+        _seam(PASSKEY_A, true);
+    }
+
+    /// The account is a proxy (owner-upgrades-design.md §8): the vaults pin no owner code or address,
+    /// so the seam is the `IDepositOwner` functions, `removalPendingOf` included (I10).
+    function _seam(uint256 pk, bool onVersion2) internal {
         DepositFactory f = deployFactory();
         vm.prank(RECOVERY);
         f.setTransferKey(TRANSFER);
         DepositAccount a = DepositAccount(f.deploy(ALICE, one(credOf(pk))));
+        if (onVersion2) {
+            // listed and applied, then back to the pinned block's time: the vaults' price pins are fresh
+            uint256 t = vm.getBlockTimestamp();
+            address v2 = newV2(f);
+            list(f, v2);
+            upgradeNow(a, pk, v2);
+            vm.warp(t);
+            assertEq(a.implementation(), v2);
+            assertEq(a.CODE_VERSION(), 2);
+        }
+        assertFalse(a.removalPendingOf(a.credentialId(credOf(pk))));
         setWithdrawalNow(a, pk, DEST);
         _mesh();
         StrategyConfig memory c = _config();
@@ -235,7 +261,10 @@ contract SeamTest is Helpers {
         }
         uint256 g = gasleft();
         address[] memory made = ICombination(combination).create(STRATEGY, address(a), c, dl, sign(pk, digest));
-        emit log_named_uint(pk == PASSKEY_A ? "create gas, passkey" : "create gas, wallet", g - gasleft());
+        emit log_named_uint(
+            string.concat(pk == PASSKEY_A ? "create gas, passkey" : "create gas, wallet", onVersion2 ? ", version 2" : ""),
+            g - gasleft()
+        );
         assertEq(made[0], at[0], "the hub, member 0");
         assertEq(made[1], at[1], "the AAVE leg");
         (address owner, bytes32 sid, bytes32 ch) = ICombination(combination).authorisedFor(at[0]);
@@ -252,12 +281,12 @@ contract SeamTest is Helpers {
         uint256 id = authorise(a, pk, combination, 3, STRATEGY, configHash, 500e6);
         deal(ARB_USDC, address(a), 600e6);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotTrusted.selector);
+        vm.expectRevert(DepositAccountState.NotTrusted.selector);
         a.fund(combination, at[0], 500e6);
         vm.warp(dueOf(a, combination, 3));
         a.applyAuthorisation(id);
         vm.prank(TRANSFER);
-        vm.expectRevert(DepositAccount.NotOwnVault.selector);
+        vm.expectRevert(DepositAccountState.NotOwnVault.selector);
         a.fund(combination, at[1], 1e6);
         vm.prank(TRANSFER);
         a.fund(combination, at[0], 500e6);
@@ -284,7 +313,10 @@ contract SeamTest is Helpers {
         bytes memory exitSig = sign(pk, a.hashTypedData(begin));
         g = gasleft();
         IMember(at[0]).beginExit(dl, exitSig);
-        emit log_named_uint(pk == PASSKEY_A ? "beginExit gas, passkey" : "beginExit gas, wallet", g - gasleft());
+        emit log_named_uint(
+            string.concat(pk == PASSKEY_A ? "beginExit gas, passkey" : "beginExit gas, wallet", onVersion2 ? ", version 2" : ""),
+            g - gasleft()
+        );
         assertTrue(IMember(at[0]).exiting());
         assertTrue(IMember(at[1]).exiting(), "the local leg told");
         vm.prank(STRANGER);
