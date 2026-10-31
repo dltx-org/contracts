@@ -42,6 +42,7 @@ contract PinsV1 is Test {
         _code("V1_LONG_CODE", "AaveV3AssetLeg");
         _code("V1_SHORT_EXIT_CODE", "HyperCoreLegExit");
         _code("V1_SHORT_EXIT_B_CODE", "HyperCoreLegExitB");
+        _code("V1_SHORT_ROUTE_CODE", "HyperCoreLegRoute");
         _code("V1_SHORT_CODE", "HyperCoreLeg");
         _code("V1_FACTORY_CODE", "StrategyFactory");
         _runtime("V1_UPGRADE_RUNTIME_HASH", "upgrade");
@@ -50,6 +51,7 @@ contract PinsV1 is Test {
         _runtime("V1_LONG_REWARDS_RUNTIME_HASH", "long-rewards");
         _runtime("V1_SHORT_EXIT_RUNTIME_HASH", "short-exit");
         _runtime("V1_SHORT_EXIT_B_RUNTIME_HASH", "short-exit-b");
+        _runtime("V1_SHORT_ROUTE_RUNTIME_HASH", "short-route");
         _runtime("V1_HUB_IMPL_RUNTIME_HASH", "hub");
         _runtime("V1_LONG_IMPL_RUNTIME_HASH", "long");
         _runtime("V1_SHORT_IMPL_RUNTIME_HASH", "short");

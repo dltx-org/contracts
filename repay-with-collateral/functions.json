@@ -7,8 +7,8 @@
       "name": "RepayWithCollateral",
       "source": "src/RepayWithCollateral.sol",
       "title": "The repay-with-collateral contract",
-      "brief": "Repays an Aave V3 position's debt out of its own collateral, in one transaction.",
-      "summary": "Repays an Aave V3 position's variable debt out of its own collateral in one transaction: a flash loan of the debt asset, the repay, the collateral pulled and withdrawn, exactly the loan and its premium bought back on Uniswap V3, what the swap did not spend supplied back, and the loan returned. Either all of it happens or none of it does. It acts only on the position of the address that calls it, keeps no balance between transactions and has no owner; one deployment serves one Aave pool and one swap router. Unlike the strategy contracts, it is already deployed, on Arbitrum for Aave V3, and DLTX's current product uses it; the long contract of a strategy will call that same deployment to repay with collateral.",
+      "brief": "Repays an Aave V3 position's debt out of its own collateral, in one transaction, moving only what the call itself brings.",
+      "summary": "Repays an Aave V3 position's debt out of its own collateral in one transaction: a flash loan of the debt asset, the repay, the caller's collateral pulled and withdrawn, exactly the loan and its premium bought back on Uniswap V3, what the swap did not spend supplied back, and the loan returned, all or nothing. Every amount it moves is the call's own. It withdraws exactly the collateral it pulled from its caller, counts only the flash loan towards the loan, and leaves any balance someone sent to the contract where it is, so such a balance can neither reach the caller nor make the call fail. It acts only on the position of the address that calls it and has no owner; one deployment serves one Aave pool and one swap router. It is built and tested, not deployed; the long contract is to call it.",
       "functions": {
         "POOL": {
           "does": "The Aave V3 (or SparkLend) pool it flash-loans from, repays, withdraws from and supplies to."
@@ -30,9 +30,9 @@
           "checks": [
             "Not re-entered, and `flashAmount` and `debtRepayAmount` above zero.",
             "The repay is at most the flash loan; with `REPAY_ALL`, the live variable debt, which must be above zero.",
-            "Pulls exactly `maxCollateralIn` of the caller's aTokens, after trying the caller's permit when its allowance is short (a failed permit is tolerated, the pull is the check). The pool's own health check on that pull must pass after the repay.",
-            "Buys back exactly the loan plus its premium, less the part of the loan the repay did not use, with an exact-output swap whose input is bounded by the collateral pulled: the whole transaction reverts if the pool cannot fill within it. The contract checks no price of its own; the caller bounds it with `maxCollateralIn`.",
-            "Supplies the collateral the swap did not spend back to the caller's position, or transfers it to the caller when the pool refuses the supply; any debt asset left over, and any balance sent to the contract directly, goes to the caller."
+            "Pulls exactly `maxCollateralIn` of the caller's aTokens, after trying the caller's permit when its allowance is short (a failed permit is tolerated, the pull is the check), and withdraws exactly what that pull added to the contract's aToken balance, never aTokens it held before. The pool's own health check on that pull must pass after the repay.",
+            "Buys back exactly the loan plus its premium, less the part of the loan the repay did not use (a balance of the debt asset the contract held before the call pays nothing), with an exact-output swap whose input is bounded by the collateral withdrawn: the whole transaction reverts if the pool cannot fill within it. The contract checks no price of its own; the caller bounds it with `maxCollateralIn`.",
+            "Supplies the collateral the swap did not spend back to the caller's position, or transfers it to the caller when the pool refuses the supply, and any of the call's own debt asset left over goes to the caller. A balance sent to the contract directly is never moved: it neither reaches the caller nor blocks the call."
           ],
           "params": {
             "collateralAsset": "The collateral to sell: the asset whose aToken the caller holds.",
@@ -79,14 +79,6 @@
             "collateralSpent": "The collateral the swap spent.",
             "collateralResupplied": "The unspent collateral supplied back to the position.",
             "collateralReturned": "The unspent collateral sent to the wallet instead, when the pool refused to take it back."
-          }
-        },
-        "StrayReturned": {
-          "does": "A balance the operation did not create (something sent to the contract directly) was handed to the caller, so it never builds up.",
-          "params": {
-            "token": "The token returned.",
-            "to": "The caller it went to.",
-            "amount": "The amount returned."
           }
         }
       },

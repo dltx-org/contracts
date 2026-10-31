@@ -18,7 +18,8 @@ optimizer_runs = 200
 via_ir = true
 bytecode_hash = "none"
 cbor_metadata = false
-fs_permissions = []
+# read-only access to the build output: test/ValuePathsV1.t.sol reads the compiler's method identifiers
+fs_permissions = [{ access = "read", path = "out" }]
 # HyperEVM's small blocks hold 2–3M gas; a fork test deploys the registry with its genesis in one call
 # (test settings only: the bytecode does not depend on them)
 disable_block_gas_limit = true

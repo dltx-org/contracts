@@ -61,8 +61,11 @@ contract VaultUpgrade is MemberState {
             deadline,
             signature
         );
-        uint256 v = IRegistryV1(registry).versionOf(manifest);
-        if (v <= codeVersion || IRegistryV1(registry).implementation(v, MemberTypes.HUB) == address(0)) {
+        IRegistryV1 r = IRegistryV1(registry);
+        uint256 v = r.versionOf(manifest);
+        // a version whose group has stopped checking in would put the strategy in exit at once, by anyone
+        // (the audit of 2026-10-26, low 1): `create` refuses it too
+        if (v <= codeVersion || r.implementation(v, MemberTypes.HUB) == address(0) || r.stopped(group, v)) {
             revert NotListed();
         }
         _schedule(OwnerMessagesV1.KIND_UPGRADE, manifest, credential);
@@ -102,8 +105,10 @@ contract VaultUpgrade is MemberState {
     function applyUpgrade() external delegated hubOnly nonReentrant {
         (bool ok, bytes32 manifest) = _takeDue(OwnerMessagesV1.KIND_UPGRADE);
         if (!ok) return;
-        uint256 v = IRegistryV1(registry).versionOf(manifest);
-        _setImplementation(IRegistryV1(registry).implementation(v, MemberTypes.HUB), v);
+        IRegistryV1 r = IRegistryV1(registry);
+        uint256 v = r.versionOf(manifest);
+        if (r.stopped(group, v)) revert NotListed(); // stays due: applied once its group checks in again
+        _setImplementation(_reviewed(r, r.implementation(v, MemberTypes.HUB)), v);
         lastPublishedAt = uint64(block.timestamp);
         uint8 n = linkCount;
         for (uint8 k; k < n; ++k) {
@@ -161,8 +166,11 @@ contract VaultUpgrade is MemberState {
     /// before this leg's creation, not after its last applied upgrade, or more than 3 days ago.
     function followMessage(bytes32 manifest, uint256 publishedAt) external delegated nonReentrant {
         if (msg.sender != MESSAGE_TRANSMITTER) revert NotAllowed();
+        // a `publishedAt` from the future (only a forged Circle message carries one) would hold every later
+        // follow back (the audit of 2026-10-26)
         if (
             publishedAt < createdAt || publishedAt <= lastPublishedAt || publishedAt + FOLLOW_MAX_AGE < block.timestamp
+                || publishedAt > block.timestamp
         ) return;
         _follow(manifest, publishedAt);
     }
@@ -170,13 +178,22 @@ contract VaultUpgrade is MemberState {
     /// Resolves `manifest` on this chain's registry: unlisted reverts (the message waits, relayable); a
     /// version not above this one's is ignored; else the slot moves to this member type's implementation.
     function _follow(bytes32 manifest, uint256 publishedAt) internal {
-        uint256 v = IRegistryV1(registry).versionOf(manifest);
+        IRegistryV1 r = IRegistryV1(registry);
+        uint256 v = r.versionOf(manifest);
         if (v == 0) revert NotListed();
         if (v <= codeVersion) return;
-        address impl = IRegistryV1(registry).implementation(v, memberType);
-        if (impl == address(0)) revert NotListed();
-        _setImplementation(impl, v);
+        address impl = r.implementation(v, memberType);
+        // unlisted here, or its group stopped (low 1): the message waits, relayable
+        if (impl == address(0) || r.stopped(group, v)) revert NotListed();
+        _setImplementation(_reviewed(r, impl), v);
         lastPublishedAt = uint64(publishedAt);
+    }
+
+    /// `impl` while its code is still the code the registry listed (finding 4's counterpart: code that
+    /// changes behind a fixed address, an EIP-7702 delegation re-pointed, never runs on a member).
+    function _reviewed(IRegistryV1 r, address impl) internal view returns (address) {
+        if (impl.codehash != r.codeHashOf(impl)) revert NotListed();
+        return impl;
     }
 
     // ── what MemberState asks of a contract with its layout (unused here) ────────────────────────────

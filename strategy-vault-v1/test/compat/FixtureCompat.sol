@@ -11,6 +11,7 @@ import {AaveV3AssetLegRewards} from "../../src/AaveV3AssetLegRewards.sol";
 import {HyperCoreLeg} from "../../src/HyperCoreLeg.sol";
 import {HyperCoreLegExit} from "../../src/HyperCoreLegExit.sol";
 import {HyperCoreLegExitB} from "../../src/HyperCoreLegExitB.sol";
+import {HyperCoreLegRoute} from "../../src/HyperCoreLegRoute.sol";
 import {StrategyFactory} from "../../src/StrategyFactory.sol";
 import {
     AssetLegParams,
@@ -22,6 +23,8 @@ import {
     ParamsTypesV1,
     PricePin,
     Profiles,
+    Routes,
+    Sides,
     StrategySpec
 } from "../../src/Types.sol";
 import {
@@ -117,6 +120,11 @@ contract CompatRegistry {
         return v == 1 ? _impl[memberType] : address(0);
     }
 
+    /// The listed code is the implementation's own (the real registry records it at the listing).
+    function codeHashOf(address impl) external view returns (bytes32) {
+        return impl.codehash;
+    }
+
     function profileOpen(bytes32 id) external view returns (bool) {
         return id == profileId;
     }
@@ -173,6 +181,7 @@ abstract contract FixtureCompat is Test {
     AaveV3AssetLeg longCode;
     HyperCoreLegExit shortExit;
     HyperCoreLegExitB shortExitB;
+    HyperCoreLegRoute shortRoute;
     HyperCoreLeg shortCode;
     MockAaveWorld aaveWorld;
     MockAggregator ethFeed;
@@ -237,7 +246,10 @@ abstract contract FixtureCompat is Test {
         MockToken aWeth = new MockToken(18);
         MockSlot0 wethPool = new MockSlot0();
         aaveWorld.setReserve(address(weth), address(aWeth), address(0), aaveWorld.GOOD_CONFIG(), 0);
-        aaveWorld.setPrice(address(weth), 2_500e8, address(0xE7));
+        // AAVE's source for WETH: a feed with a fresh round (finding 3: the registry reads it at listing)
+        MockAggregator wethSource = new MockAggregator(8);
+        wethSource.push(wethSource.id(1, 1), 2_500e8, block.timestamp);
+        aaveWorld.setPrice(address(weth), 2_500e8, address(wethSource));
         aaveWorld.setPool(address(weth), USDC, 500, address(wethPool));
         AaveV3AssetLegExit le = new AaveV3AssetLegExit(address(aaveWorld), USDC, address(aaveWorld), address(seqFeed));
         AaveV3AssetLegRewards lr = new AaveV3AssetLegRewards(address(aaveWorld), USDC, address(aaveWorld), address(seqFeed));
@@ -247,8 +259,10 @@ abstract contract FixtureCompat is Test {
         );
         shortExit = new HyperCoreLegExit();
         shortExitB = new HyperCoreLegExitB();
+        shortRoute = new HyperCoreLegRoute();
         shortCode = new HyperCoreLeg(
             address(shortExit), address(shortExit).codehash, address(shortExitB), address(shortExitB).codehash,
+            address(shortRoute), address(shortRoute).codehash,
             address(upgrade), address(upgrade).codehash
         );
         registry.list(MANIFEST, address(hubCode), address(longCode), address(shortCode));
@@ -284,6 +298,7 @@ abstract contract FixtureCompat is Test {
             address(registry), ParamsTypesV1.HUB_NAME, ParamsTypesV1.HUB_FIELDS, ParamsTypesV1.HUB_COUNT, hubDomains, pins
         );
         core.setOracle(ETH, 243_140, 4);
+        core.setMark(ETH, 243_140); // a listed perp always shows a mark: the exit's closes read it (spec §6)
         core.setCoin(ETH, "ETH");
         core.setOracle(HYPE_PERP, 802_635, 2);
     }
@@ -358,14 +373,22 @@ abstract contract FixtureCompat is Test {
             HYPEREVM_DOMAIN,
             Legs.SHORT,
             abi.encode(
-                HyperCoreParams(ethProfile, sp.perp, p.perpCoin, sp.asset, sp.orderBoundBp, sp.fastFeeCapBp, sp.feeBudgetBp)
+                HyperCoreParams(
+                    ethProfile, sp.perp, p.perpCoin, sp.asset, sp.orderBoundBp, sp.fastFeeCapBp, sp.feeBudgetBp,
+                    Routes.AGENT, Sides.SHORT, 1000, 15, 15, address(0), 0, false
+                )
             )
         );
     }
 
     function _create(StrategySpec memory c) internal returns (address) {
+        return _createAs(STRATEGY, c);
+    }
+
+    /// Under another strategy id: the factory refuses an owner's id twice (the audit of 2026-10-26, low 2).
+    function _createAs(bytes32 id, StrategySpec memory c) internal returns (address) {
         uint256 deadline = block.timestamp + 1 days;
-        return factory.create(STRATEGY, address(owner), c, deadline, _createSig(walletPk, STRATEGY, c, deadline))[0];
+        return factory.create(id, address(owner), c, deadline, _createSig(walletPk, id, c, deadline))[0];
     }
 
     function _legs(StrategySpec memory c) internal view returns (address[] memory at) {

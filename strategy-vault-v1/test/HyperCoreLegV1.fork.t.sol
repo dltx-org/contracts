@@ -10,9 +10,10 @@ import {HyperCoreLeg} from "../src/HyperCoreLeg.sol";
 import {HyperCoreLegState} from "../src/HyperCoreLegState.sol";
 import {HyperCoreLegExit} from "../src/HyperCoreLegExit.sol";
 import {HyperCoreLegExitB} from "../src/HyperCoreLegExitB.sol";
+import {HyperCoreLegRoute} from "../src/HyperCoreLegRoute.sol";
 import {StrategyRegistry} from "../src/StrategyRegistry.sol";
 import {StrategyFactory} from "../src/StrategyFactory.sol";
-import {AssetLegParams, AssetProfile, AssetsV1, HubParams, HyperCoreParams, LegSpec, Manifests, MemberTypes, ParamsTypesV1, PricePin, Profiles, StrategySpec, VersionMember} from "../src/Types.sol";
+import {AssetLegParams, AssetProfile, AssetsV1, HubParams, HyperCoreParams, LegSpec, Manifests, MemberTypes, ParamsTypesV1, PricePin, Profiles, Routes, Sides, StrategySpec, VersionMember} from "../src/Types.sol";
 import {Assets, Legs, OwnerMessages} from "../src/lib/VaultTypes.sol";
 import {PriceSource} from "../src/lib/PriceSource.sol";
 import {CoreState, MockOwner, PrecompileStub} from "./mocks/Mocks.sol";
@@ -64,6 +65,7 @@ contract HyperCoreLegV1ForkTest is Test {
     VaultUpgrade upgrade;
     HyperCoreLegExit shortExit;
     HyperCoreLegExitB shortExitB;
+    HyperCoreLegRoute shortRoute;
     HyperCoreLeg shortImpl;
     CoreState core;
     MockOwner owner;
@@ -100,6 +102,7 @@ contract HyperCoreLegV1ForkTest is Test {
         }
         core = CoreState(STATE);
         core.setOracle(0, 8_205_810, szd);
+        core.setMark(0, 8_205_810); // the key's reduce-only order reads both prices (spec §6)
         core.setCoin(0, coin);
         core.setOracle(159, 802_635, 2);
         (wallet, walletPk) = makeAddrAndKey("owner-wallet");
@@ -108,8 +111,10 @@ contract HyperCoreLegV1ForkTest is Test {
         upgrade = new VaultUpgrade();
         shortExit = new HyperCoreLegExit();
         shortExitB = new HyperCoreLegExitB();
+        shortRoute = new HyperCoreLegRoute();
         shortImpl = new HyperCoreLeg(
             address(shortExit), address(shortExit).codehash, address(shortExitB), address(shortExitB).codehash,
+            address(shortRoute), address(shortRoute).codehash,
             address(upgrade), address(upgrade).codehash
         );
         // the genesis: version 1 and the BTC profile in the registry's constructor (AP-3 against the fork)
@@ -149,6 +154,7 @@ contract HyperCoreLegV1ForkTest is Test {
             "test/MocksV1.sol:HyperCoreLegV2",
             abi.encode(
                 address(shortExit), address(shortExit).codehash, address(shortExitB), address(shortExitB).codehash,
+                address(shortRoute), address(shortRoute).codehash,
                 address(upgrade), address(upgrade).codehash, address(registry)
             )
         );
@@ -225,7 +231,7 @@ contract HyperCoreLegV1ForkTest is Test {
             abi.encode(AssetLegParams(btcProfile, p.asset, p.swapPool, p.swapFee, p.rateFeed, 1.15e18, 300, 50, 5))
         );
         c.legs[1] = LegSpec(
-            MemberTypes.HYPERCORE, 19, Legs.SHORT, abi.encode(HyperCoreParams(btcProfile, 0, p.perpCoin, AssetsV1.BTC, 100, 0, 50))
+            MemberTypes.HYPERCORE, 19, Legs.SHORT, abi.encode(HyperCoreParams(btcProfile, 0, p.perpCoin, AssetsV1.BTC, 100, 0, 50, Routes.AGENT, Sides.SHORT, 1000, 15, 15, address(0), 0, false))
         );
     }
 
@@ -263,7 +269,7 @@ contract HyperCoreLegV1ForkTest is Test {
         vm.expectEmit(true, false, false, false, CORE_WRITER);
         emit RawAction(short, "");
         vm.prank(key);
-        HyperCoreLeg(payable(short)).order(true, 100_000, true);
+        HyperCoreLegRoute(short).order(true, 100_000, true, 0);
         uint256 deadline = block.timestamp + 1 hours;
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(
             walletPk,
@@ -274,7 +280,8 @@ contract HyperCoreLegV1ForkTest is Test {
             )
         );
         MemberBase(short).beginExit(deadline, abi.encodePacked(uint8(1), r, s, v));
-        assertEq(HyperCoreLegState(short).agent(), HyperCoreLeg(payable(short)).burner());
+        assertTrue(HyperCoreLegState(short).burning());
+        assertEq(HyperCoreLegState(short).exitAgent(), HyperCoreLegState(short).agent());
     }
 
     /// The hub's `.upgrade.v1` message, delivered as Circle's transmitter would: the short follows to

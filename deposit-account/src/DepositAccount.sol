@@ -57,17 +57,21 @@ contract DepositAccount is DepositAccountState {
     /// The vault build's version-1 combination factory (owner-upgrades-design.md §8): the deterministic
     /// deployer, salt keccak256("dltx.vault.v1.factory"), for that build's RECOVERY (contracts/strategy-vault-v1
     /// script/DeployV1.s.sol `factoryOf`); it moves with that build and that key (scripts/repin-v1.mjs).
-    address internal constant PINNED_VAULT_FACTORY = 0xF6989dDcf67CcbC1077C9054D62F8A1363623d1d;
+    address internal constant PINNED_VAULT_FACTORY = 0x05C8c664b5484ed764f8C53e72c182fE071ceAA9;
 
     /// This version's record module (owner-upgrades-design.md §3.3): created before this code, its code
     /// hash checked here, never changeable.
     address public immutable module;
+    /// The module's code hash this code was built for: the factory's listing checks the module still
+    /// has it (the external audit's finding 4).
+    bytes32 public immutable moduleCodeHash;
 
-    constructor(address factory_, address module_, bytes32 moduleCodeHash) DepositAccountState(factory_) {
-        if (moduleCodeHash == bytes32(0) || moduleCodeHash == keccak256("") || module_.codehash != moduleCodeHash) {
+    constructor(address factory_, address module_, bytes32 moduleCodeHash_) DepositAccountState(factory_) {
+        if (moduleCodeHash_ == bytes32(0) || moduleCodeHash_ == keccak256("") || module_.codehash != moduleCodeHash_) {
             revert BadModule();
         }
         module = module_;
+        moduleCodeHash = moduleCodeHash_;
     }
 
     modifier nonReentrant() {
@@ -374,8 +378,10 @@ contract DepositAccount is DepositAccountState {
     /// Transfer key only (amendment 1, §2.3): pays `amount` of this chain's USDC to `vault`, a deployed
     /// vault that `vaultFactory` (trusted by this account on this chain) registered to THIS account,
     /// within the allowance the owner authorised for that factory, strategy and configuration, and
-    /// only once a withdrawal address is in effect (§8.2).
+    /// only once a withdrawal address is in effect (§8.2), on a synced copy only (an expired record
+    /// funds nothing, as it withdraws nothing: the external audit's L7).
     function fund(address vaultFactory, address vault, uint256 amount) external nonReentrant {
+        if (!synced()) revert NotSynced();
         _settle();
         _transferKeyOnly();
         if (_withdrawal == address(0)) revert NoWithdrawalAddress();
@@ -471,15 +477,18 @@ contract DepositAccount is DepositAccountState {
 
     /// The owner's exit of `amount` of `token`: its fee, when one is due (a fee token and a fee
     /// recipient), refused unless `amount` is above it (`AmountNotAboveFee`: nothing moves, the money
-    /// stays) or is the whole balance (E4b: the last dollar or less leaves free, so the owner always
-    /// can), then paid when it can: zero when the transfer reverts or answers false (a blacklisted
-    /// recipient), so a fee never blocks the withdrawal it belongs to (amendment E). Returns what it paid.
+    /// stays) or the whole balance is at most the fee (E4b: the last dollar or less leaves free, so the
+    /// owner always can; read as the balance, not `amount == balance`, so dust arriving between the
+    /// signature and its relay cannot block it, the external audit's L3; above the last dollar a part
+    /// at or below the fee is still refused), then paid when it can: zero when the transfer reverts or
+    /// answers false (a blacklisted recipient), so a fee never blocks the withdrawal it belongs to
+    /// (amendment E). Returns what it paid.
     function _takeFee(address token, uint256 amount) internal returns (uint256) {
         address recipient = IDepositFactory(factory).feeRecipient();
         uint256 fee = _exitFee(token);
         if (fee == 0 || recipient == address(0)) return 0;
         if (amount <= fee) {
-            if (amount == _balanceOf(token)) return 0;
+            if (_balanceOf(token) <= fee) return 0;
             revert AmountNotAboveFee();
         }
         return _try(token, abi.encodeWithSelector(0xa9059cbb, recipient, fee)) ? fee : 0;

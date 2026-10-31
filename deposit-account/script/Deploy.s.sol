@@ -43,10 +43,16 @@ contract Deploy is Script {
     );
     bytes32 constant FACTORY_SALT = keccak256("dltx.deposit-factory");
     /// The pinned build (test/DepositFactory.t.sol `PINNED_CREATION_CODE_HASH`).
-    bytes32 constant PINNED_CREATION_CODE_HASH = 0x798060600150566aab91bf10516dc49b93b5b3c82979c0653d0cf52f6b12b807;
+    bytes32 constant PINNED_CREATION_CODE_HASH = 0x2b10b9bbb5fef26f7aa7a9dcc947fe8e363d87bdda2badc047b8088ec1e51ead;
 
     function run() external returns (DepositFactory factory) {
         address recovery = RECOVERY;
+        // the audit of 2026-10-26, finding 7: never the placeholder hot key as RECOVERY, compared by its hash
+        // (scripts/repin-v1.mjs rewrites the plain address wherever it appears); `REHEARSAL=1` for a fork
+        require(
+            keccak256(abi.encode(RECOVERY)) != 0xe310e54c72952cf3217dbc2d1a2b01569ca635f47cb3b86e070d4bafa5180acf || vm.envOr("REHEARSAL", false),
+            "RECOVERY is the placeholder hot key: pin the hardware wallet's (scripts/repin-v1.mjs --recovery)"
+        );
         address expected = vm.envOr("EXPECTED_FACTORY", address(0));
         require(keccak256(type(DepositFactory).creationCode) == PINNED_CREATION_CODE_HASH, "not the pinned build");
         require(DEPLOYER.codehash == DEPLOYER_CODEHASH, "no canonical deterministic deployer on this chain");

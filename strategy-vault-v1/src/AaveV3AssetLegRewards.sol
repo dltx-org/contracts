@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-DLTX-Source-1.0
 pragma solidity 0.8.37;
 
-import {AaveV3AssetLegState, IReceiverPins} from "./AaveV3AssetLegState.sol";
+import {AaveV3AssetLegState, IAaveSources, IReceiverPins} from "./AaveV3AssetLegState.sol";
 import {IRegistryV1} from "./Interfaces.sol";
 import {
     AaveReserveData, IAavePool, IERC20, IMerklDistributor, IRewardsController, IUniswapV3Pool
@@ -16,10 +16,6 @@ interface IDecimals {
 
 interface IDescription {
     function description() external view returns (string memory);
-}
-
-interface IAaveSources {
-    function getSourceOfAsset(address asset) external view returns (address);
 }
 
 interface IUniswapV3Factory {
@@ -116,7 +112,13 @@ contract AaveV3AssetLegRewards is AaveV3AssetLegState {
                 || (c >> PAUSED_BIT) & 1 == 1 || (c >> DEBT_CEILING_START) & DEBT_CEILING_MASK != 0
                 || (c >> VIRTUAL_ACC_BIT) & 1 == 0
         ) revert BadProfile();
-        if (IAaveSources(ORACLE).getSourceOfAsset(a) == address(0) || _price(a) == 0) revert BadProfile();
+        address source = IAaveSources(ORACLE).getSourceOfAsset(a);
+        if (source == address(0) || _price(a) == 0) revert BadProfile();
+        // a source with no readable rounds would stall every sale: refused when the registry lists it
+        if (live) {
+            (bool fresh,,) = PriceSource.latestAt(source, block.timestamp, PRICE_MAX_AGE);
+            if (!fresh) revert BadProfile();
+        }
         address factory_ = IRouterFactory(IReceiverPins(RECEIVER).ROUTER()).factory();
         if (p.swapPool == address(0) || IUniswapV3Factory(factory_).getPool(a, USDC, p.swapFee) != p.swapPool) {
             revert BadProfile();

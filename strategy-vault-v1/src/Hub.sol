@@ -144,6 +144,9 @@ contract Hub is MemberBase, HubState {
         booked += net;
     }
 
+    /// Money from outside the strategy minted here stays unbooked: capital at the next `_sync`.
+    function _onOther(uint256) internal override {}
+
     // ── the execution key (§3.7) ─────────────────────────────────────────────────────────────────────────
 
     /// USDC to leg `k`, once it is ready; Circle's fee charged to the hub's 24-hour fee budget, a share

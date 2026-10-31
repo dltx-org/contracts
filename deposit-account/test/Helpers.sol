@@ -531,12 +531,31 @@ abstract contract Helpers is Test {
         vm.etch(ON_V2, hex"00");
     }
 
+    /// What the owner signs of `impl` (the external audit's finding 4): the version `a`'s factory
+    /// lists it at (0 unlisted) and the code hash of `impl` now.
+    function upgradeTerms(DepositAccount a, address impl) internal view returns (uint256 codeVersion, bytes32 codeHash) {
+        codeVersion = DepositFactory(a.factory()).versionOf(impl);
+        codeHash = impl.codehash;
+    }
+
+    /// The owner's `ScheduleUpgrade` digest of `impl` with these terms.
+    function scheduleDigest(
+        DepositAccount a,
+        address impl,
+        uint256 codeVersion,
+        bytes32 codeHash,
+        uint256 nonce,
+        uint256 deadline
+    ) internal view returns (bytes32) {
+        return typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), impl, codeVersion, codeHash, nonce, deadline));
+    }
+
     /// The owner's `ScheduleUpgrade` to `impl`, signed with the signer's next record nonce.
     function scheduleUpgrade(DepositAccount a, uint256 signer, address impl) internal returns (uint256 due) {
+        (uint256 v, bytes32 h) = upgradeTerms(a, impl);
         uint256 nonce = a.recordNonceOf(credOf(signer));
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
-        bytes32 d = typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), impl, nonce, deadline));
-        rec(a).scheduleUpgrade(impl, nonce, deadline, sign(signer, d));
+        rec(a).scheduleUpgrade(impl, v, h, nonce, deadline, sign(signer, scheduleDigest(a, impl, v, h, nonce, deadline)));
         (,, due) = a.pendingUpgrade();
     }
 
@@ -564,7 +583,8 @@ abstract contract Helpers is Test {
     {
         nonce = a.recordNonceOf(credOf(signer));
         deadline = vm.getBlockTimestamp() + 1 hours;
-        sig = sign(signer, typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), impl, nonce, deadline)));
+        (uint256 v, bytes32 h) = upgradeTerms(a, impl);
+        sig = sign(signer, scheduleDigest(a, impl, v, h, nonce, deadline));
     }
 
     /// Schedules `impl`, lets its 24 hours pass and applies it, as anyone may.
@@ -575,9 +595,13 @@ abstract contract Helpers is Test {
         rec(a).applyUpgrade();
     }
 
-    /// The home's upgrade message, as `publishUpgrade` encodes it.
-    function upgradeBody(address impl, uint64 publishedAt) internal pure returns (bytes memory) {
-        return abi.encode(keccak256("dltx.owner-upgrade.v1"), impl, publishedAt);
+    /// The home's upgrade message, as `publishUpgrade` encodes it: the code hash of `impl` here.
+    function upgradeBody(address impl, uint64 publishedAt) internal view returns (bytes memory) {
+        return upgradeBody(impl, impl.codehash, publishedAt);
+    }
+
+    function upgradeBody(address impl, bytes32 codeHash, uint64 publishedAt) internal pure returns (bytes memory) {
+        return abi.encode(keccak256("dltx.owner-upgrade.v1"), impl, codeHash, publishedAt);
     }
 
     /// Brings a copy in sync with the home's record of `version`, as Circle's transmitter delivers it.

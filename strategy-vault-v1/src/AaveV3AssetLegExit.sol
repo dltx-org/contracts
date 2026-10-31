@@ -140,7 +140,9 @@ contract AaveV3AssetLegExit is AaveV3AssetLegState {
     }
 
     /// The non-flash fallback: withdraw, sell what the band lets go, supply back the rest, repay; the
-    /// health factor afterwards never lower.
+    /// health factor afterwards never lower. A supply AAVE refuses (a frozen reserve) leaves the rest idle
+    /// for part 6 rather than failing the part, which then stands if the repay alone kept the health
+    /// factor (the audit of 2026-10-26, low 6).
     function _repayBySale(uint256 collateral) internal {
         if (collateral == 0) return;
         uint256 hfBefore = _health();
@@ -149,7 +151,8 @@ contract AaveV3AssetLegExit is AaveV3AssetLegState {
         uint256 paid = _exitSale(got);
         if (got > paid) {
             IERC20(a).approve(POOL, got - paid);
-            IAavePool(POOL).supply(a, got - paid, address(this), 0);
+            try IAavePool(POOL).supply(a, got - paid, address(this), 0) {} catch {}
+            IERC20(a).approve(POOL, 0);
         }
         _repay(type(uint256).max);
         if (_health() < hfBefore) revert HealthFell();
@@ -163,6 +166,9 @@ contract AaveV3AssetLegExit is AaveV3AssetLegState {
         if (_beyond(_sqrtPrice(_swapPool), limit, false)) revert PoolOffOracle();
         uint256 out;
         (paid, out) = _poolSwap(_isToken0, amountIn, limit);
+        // a pool with no liquidity inside the band pays nothing without reverting: a failed part, never a
+        // part that succeeded at selling nothing (the audit of 2026-10-26, low 15)
+        if (paid == 0) revert ZeroAmount();
         uint256 unit = _unit();
         if (out < paid * pr * 1e6 * (10_000 - oracleBoundBp) / (pu * unit * 10_000)) revert SwapShort();
         uint256 valueIn = paid * _price(_asset) / unit;

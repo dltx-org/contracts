@@ -24,6 +24,7 @@ contract OwnerDigestsTest is Helpers {
     address constant FACTORY_V = 0x3333333333333333333333333333333333333333;
     bytes32 constant STRATEGY_V = 0x000000000000000000000000000000000192f1a2b3c47d8e9f00112233445566;
     bytes32 constant CONFIG_V = 0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;
+    bytes32 constant SCHEDULE_UPGRADE_V = 0x2b90e6f869947f26ad26a5990dd7e5f16b2016a49d3bea321068f000804ed23d;
 
     DepositFactory f;
     DepositAccount a;
@@ -66,6 +67,28 @@ contract OwnerDigestsTest is Helpers {
         console.logBytes32(digest);
         assertEq(at.domainSeparator(), 0x4e9a663853527e9c96e06f2735c7a91b7b6c128aaea3d88b2e611cd4765f3217);
         assertEq(digest, 0x0cd9bd678d9654c88b8689384eae6428242b1ef8ad8946d07a1d6aaa8268c96b, "AuthoriseStrategy");
+    }
+
+    /// `ScheduleUpgrade` since the external audit's finding 4 (the version and the code hash signed):
+    /// the vector `engine/owner/tests/contract.test.ts` pins, through the account's own encoding.
+    function test_scheduleUpgradeDigestVector() public {
+        vm.etch(ACCOUNT_V, f.genesis().code);
+        DepositAccount at = DepositAccount(ACCOUNT_V);
+        bytes32 digest = at.hashTypedData(
+            keccak256(
+                abi.encode(
+                    at.SCHEDULE_UPGRADE_TYPEHASH(),
+                    address(0x4444444444444444444444444444444444444444),
+                    uint256(2),
+                    bytes32(0x5555555555555555555555555555555555555555555555555555555555555555),
+                    uint256(5),
+                    uint256(1_800_000_000)
+                )
+            )
+        );
+        console.log("ScheduleUpgrade");
+        console.logBytes32(digest);
+        assertEq(digest, SCHEDULE_UPGRADE_V, "ScheduleUpgrade");
     }
 
     function test_accountAcceptsTheDigest() public {

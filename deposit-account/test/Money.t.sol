@@ -289,7 +289,10 @@ contract MoneyTest is Helpers {
     }
 
     /// E4b (Codex's review): the WHOLE balance at or below the fee leaves free, by either owner path,
-    /// so the owner can always empty the account without DLTX; part of it is still refused.
+    /// so the owner can always empty the account without DLTX. Read on the balance since the external
+    /// audit's L3: while the balance is at most the fee, a part of it leaves free too (splitting skips
+    /// no fee: there is nothing above the last dollar); above the fee, a part at or below it is
+    /// still refused, so splitting an exit still pays the fee above the last dollar.
     function test_theWholeBalanceAtOrBelowTheFeeLeavesFree() public {
         withAddress();
         uint256 all = usdc(address(a));
@@ -299,9 +302,8 @@ contract MoneyTest is Helpers {
         uint256 dest = usdc(DEST);
         uint256 fees = usdc(FEES);
         vm.startPrank(vm.addr(WALLET_A));
-        vm.expectRevert(DepositAccountState.AmountNotAboveFee.selector);
         a.withdraw(USDC, 0.5e6);
-        a.withdraw(USDC, 0.8e6);
+        a.withdraw(USDC, 0.3e6);
         vm.stopPrank();
         assertEq(usdc(address(a)), 0);
         assertEq(usdc(DEST), dest + 0.8e6);
@@ -313,6 +315,34 @@ contract MoneyTest is Helpers {
         assertEq(usdc(address(a)), 0);
         assertEq(usdc(DEST), dest + 1.8e6);
         assertEq(usdc(FEES), fees);
+        // above the last dollar, a part at or below the fee is refused, by either path
+        deal(USDC, address(a), 1.5e6);
+        vm.prank(vm.addr(WALLET_A));
+        vm.expectRevert(DepositAccountState.AmountNotAboveFee.selector);
+        a.withdraw(USDC, 0.5e6);
+        w = withdrawal(a, USDC, 1e6, 1e6);
+        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
+        vm.expectRevert(DepositAccountState.AmountNotAboveFee.selector);
+        a.withdrawSigned(w, 0, sig);
+    }
+
+    /// The external audit's L3: the owner signs the whole balance (at most the fee), one unit of dust
+    /// arrives before the relay; the signed exit still leaves, free, and the dust stays.
+    function test_L3_dustBetweenSignatureAndRelayDoesNotBlockTheLastDollar() public {
+        withAddress();
+        uint256 all = usdc(address(a));
+        vm.prank(vm.addr(WALLET_A));
+        a.withdraw(USDC, all - 0.8e6);
+        uint256 dest = usdc(DEST);
+        uint256 fees = usdc(FEES);
+        Withdrawal memory w = withdrawal(a, USDC, 0.8e6, 1e6);
+        bytes memory sig = signWithdrawal(a, PASSKEY_A, w);
+        MockToken(USDC).mint(address(a), 1); // a stranger's dust, between the signature and its relay
+        vm.prank(STRANGER);
+        a.withdrawSigned(w, 0, sig);
+        assertEq(usdc(DEST), dest + 0.8e6);
+        assertEq(usdc(FEES), fees);
+        assertEq(usdc(address(a)), 1);
     }
 
     /// One rule for every signature of USDC or USDT: a maximum of at least the fee, even when no fee

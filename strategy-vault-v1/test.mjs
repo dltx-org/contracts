@@ -10,6 +10,7 @@
  * The urls come from `.env` at the repository root (the file the engine reads) when the environment does not carry them.
  */
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,7 +23,8 @@ if (existsSync(envFile)) {
   for (const line of readFileSync(envFile, 'utf8').split('\n')) {
     const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim())
     if (!m) continue
-    const [, key, raw] = m
+    const [, name, raw] = m
+    const key = name.replace(/_RPC_PRIMARY$/, '_RPC_URL')
     if (!wanted.includes(key) || process.env[key]) continue
     process.env[key] = raw.replace(/^["']|["']$/g, '')
   }
@@ -143,6 +145,7 @@ for (const [leg, module] of [
   ['AaveV3AssetLeg', 'AaveV3AssetLegRewards'],
   ['HyperCoreLeg', 'HyperCoreLegExit'],
   ['HyperCoreLeg', 'HyperCoreLegExitB'],
+  ['HyperCoreLeg', 'HyperCoreLegRoute'],
 ]) {
   const a = layout(leg)
   const b = layout(module)
@@ -159,6 +162,16 @@ for (const [leg, module] of [
 // must keep its pinned file (`layouts/<Member>.txt`) as a prefix: a later version appends, never
 // reorders, retypes or drops a field (`UPDATE_LAYOUTS=1 node test.mjs` writes the files, for a new
 // version only, never to make a changed layout pass).
+// The pinned files are frozen by hash (the audit of 2026-10-26, finding 8: an environment variable could
+// otherwise rewrite them to match a moved layout). `UPDATE_LAYOUTS=1` writes a file that does not exist
+// yet and never rewrites one: a version deployed keeps its file; before deployment, delete the file,
+// write it, and pin its new hash here in the same commit.
+const LAYOUTS_V1_SHA256 = {
+  Hub: '14c6f2cd409ec0575dd3910591f4f1fe804e25a8b6ce66695e09ef18bf83c4f5',
+  AaveV3AssetLeg: 'ec4a2e3a1412b74251828f46e081386e1449b944e20b450bc11b974dcb3805e5',
+  // re-pinned before broadcast: contract route, then its referral setup's last fields (setupIn)
+  HyperCoreLeg: 'd89de276f56d580ea816937a3d1ed00810a8d9d660310c7d294506a7971e673d',
+}
 const upgradeLayout = layout('VaultUpgrade')
 const layoutDir = resolve(here, 'layouts')
 for (const member of V1_MEMBERS) {
@@ -171,11 +184,26 @@ for (const member of V1_MEMBERS) {
   }
   const file = resolve(layoutDir, `${member}.txt`)
   if (process.env.UPDATE_LAYOUTS === '1') {
+    if (existsSync(file)) {
+      console.error(
+        `strategy-vault-v1: layouts/${member}.txt is pinned: never rewritten (delete it first, before deployment only)`,
+      )
+      process.exit(1)
+    }
     mkdirSync(layoutDir, { recursive: true })
     writeFileSync(file, `${a.join('\n')}\n`)
+    console.log(
+      `strategy-vault-v1: wrote layouts/${member}.txt, sha256 ${createHash('sha256').update(readFileSync(file)).digest('hex')}`,
+    )
+    continue
   }
   if (!existsSync(file)) {
     console.error(`strategy-vault-v1: no pinned layout for ${member} (${file})`)
+    process.exit(1)
+  }
+  const sha = createHash('sha256').update(readFileSync(file)).digest('hex')
+  if (sha !== LAYOUTS_V1_SHA256[member]) {
+    console.error(`strategy-vault-v1: layouts/${member}.txt is not its pinned file (sha256 ${sha})`)
     process.exit(1)
   }
   const pinned = readFileSync(file, 'utf8').trim().split('\n')
@@ -210,7 +238,7 @@ if (existsSync(depositProxy)) {
   )
 }
 
-// ...and version 1's pinned build likewise: the same eleven creation-code hashes, six module runtime
+// ...and version 1's pinned build likewise: the same twelve creation-code hashes, seven module runtime
 // hashes and three implementation runtime hashes (the genesis) in test/PinnedV1.t.sol and script/DeployV1.s.sol
 const v1PinsOf = (file) =>
   [
@@ -222,7 +250,7 @@ const v1PinsOf = (file) =>
     .sort()
 const v1Tested = v1PinsOf('test/PinnedV1.t.sol')
 if (
-  v1Tested.length !== 20 ||
+  v1Tested.length !== 22 ||
   JSON.stringify(v1Tested) !== JSON.stringify(v1PinsOf('script/DeployV1.s.sol'))
 ) {
   console.error(

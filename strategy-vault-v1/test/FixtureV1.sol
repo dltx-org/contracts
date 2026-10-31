@@ -11,9 +11,10 @@ import {AaveV3AssetLegRewards} from "../src/AaveV3AssetLegRewards.sol";
 import {HyperCoreLeg} from "../src/HyperCoreLeg.sol";
 import {HyperCoreLegExit} from "../src/HyperCoreLegExit.sol";
 import {HyperCoreLegExitB} from "../src/HyperCoreLegExitB.sol";
+import {HyperCoreLegRoute} from "../src/HyperCoreLegRoute.sol";
 import {StrategyRegistry} from "../src/StrategyRegistry.sol";
 import {StrategyFactory} from "../src/StrategyFactory.sol";
-import {AssetLegParams, AssetProfile, AssetsV1, HubParams, HyperCoreParams, LegSpec, Manifests, MemberTypes, OwnerMessagesV1, ParamsTypesV1, PricePin, Profiles, StrategySpec, VersionMember} from "../src/Types.sol";
+import {AssetLegParams, AssetProfile, AssetsV1, HubParams, HyperCoreParams, LegSpec, Manifests, MemberTypes, OwnerMessagesV1, ParamsTypesV1, PricePin, Profiles, Routes, Sides, StrategySpec, VersionMember} from "../src/Types.sol";
 import {Arbitrum} from "../src/lib/Pinned.sol";
 import {Assets, Legs, OwnerMessages} from "../src/lib/VaultTypes.sol";
 import {PriceSource} from "../src/lib/PriceSource.sol";
@@ -90,12 +91,14 @@ abstract contract FixtureV1 is Test {
     MockSlot0 wbtcPool30;
     MockAggregator btcUsd;
     MockAggregator wbtcBtc;
+    MockAggregator wbtcSource; // AAVE's source for WBTC (finding 3)
     MockAggregator seqFeed;
 
     // HyperEVM
     CoreState core;
     HyperCoreLegExit shortExit;
     HyperCoreLegExitB shortExitB;
+    HyperCoreLegRoute shortRoute;
     HyperCoreLeg shortImpl;
 
     bytes32 manifest1;
@@ -192,7 +195,10 @@ abstract contract FixtureV1 is Test {
         wbtcPool = new MockSlot0();
         wbtcPool30 = new MockSlot0();
         aave.setReserve(address(wbtc), address(aWbtc), address(0), MockAaveWorld(aave).GOOD_CONFIG(), 3);
-        aave.setPrice(address(wbtc), 82_000e8, address(0xB7C));
+        // AAVE's source for WBTC: a feed with a fresh round, as every sale's bound now reads (finding 3)
+        wbtcSource = new MockAggregator(8);
+        wbtcSource.push(wbtcSource.id(1, 1), 82_000e8, block.timestamp);
+        aave.setPrice(address(wbtc), 82_000e8, address(wbtcSource));
         aave.setPool(address(wbtc), ARB_USDC, 500, address(wbtcPool));
         aave.setPool(address(wbtc), ARB_USDC, 3000, address(wbtcPool30));
         btcUsd = new MockAggregator(8);
@@ -223,8 +229,10 @@ abstract contract FixtureV1 is Test {
         core.setOracle(159, 802_635, 2);
         shortExit = new HyperCoreLegExit();
         shortExitB = new HyperCoreLegExitB();
+        shortRoute = new HyperCoreLegRoute();
         shortImpl = new HyperCoreLeg(
             address(shortExit), address(shortExit).codehash, address(shortExitB), address(shortExitB).codehash,
+            address(shortRoute), address(shortRoute).codehash,
             address(upgrade), address(upgrade).codehash
         );
         _genesis(_members(FAR_HUB, FAR_LONG, address(shortImpl), address(shortImpl).codehash), _one(_btc()));
@@ -235,6 +243,7 @@ abstract contract FixtureV1 is Test {
     function _feeds(int256 btc, int256 rate) internal {
         btcUsd.push(btcUsd.id(1, uint64(uint80(btcUsd.latest())) + 1), btc, vm.getBlockTimestamp());
         wbtcBtc.push(wbtcBtc.id(1, uint64(uint80(wbtcBtc.latest())) + 1), rate, vm.getBlockTimestamp());
+        wbtcSource.push(wbtcSource.id(1, uint64(uint80(wbtcSource.latest())) + 1), btc, vm.getBlockTimestamp());
     }
 
     // ── versions and profiles ──────────────────────────────────────────────────────────────────────────
@@ -331,7 +340,8 @@ abstract contract FixtureV1 is Test {
     }
 
     function _shortParams(AssetProfile memory p, bytes32 id) internal pure returns (HyperCoreParams memory) {
-        return HyperCoreParams(id, p.perp, p.perpCoin, p.shortAsset, 100, 5, 50);
+        // the agent route, the short, 10x, 15 bp bands, no builder fee
+        return HyperCoreParams(id, p.perp, p.perpCoin, p.shortAsset, 100, 5, 50, Routes.AGENT, Sides.SHORT, 1000, 15, 15, address(0), 0, false);
     }
 
     function _spec(bytes32 manifest, bytes memory hubParams, bytes memory longParams, bytes memory shortParams)
@@ -361,13 +371,22 @@ abstract contract FixtureV1 is Test {
     }
 
     function _create(StrategySpec memory c) internal returns (address[] memory) {
+        return _createAs(STRATEGY, c);
+    }
+
+    /// Under another strategy id: the factory refuses an owner's id twice (the audit of 2026-10-26, low 2).
+    function _createAs(bytes32 id, StrategySpec memory c) internal returns (address[] memory) {
         uint256 deadline = vm.getBlockTimestamp() + 1 days;
-        return factory.create(STRATEGY, address(owner), c, deadline, _createSig(c, deadline));
+        return factory.create(id, address(owner), c, deadline, _createSigAs(id, c, deadline));
     }
 
     function _createSig(StrategySpec memory c, uint256 deadline) internal view returns (bytes memory) {
+        return _createSigAs(STRATEGY, c, deadline);
+    }
+
+    function _createSigAs(bytes32 id, StrategySpec memory c, uint256 deadline) internal view returns (bytes memory) {
         bytes32 digest = keccak256("unsignable");
-        try factory.createDigest(STRATEGY, address(owner), c, deadline) returns (bytes32 d) {
+        try factory.createDigest(id, address(owner), c, deadline) returns (bytes32 d) {
             digest = d;
         } catch {}
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(walletPk, digest);

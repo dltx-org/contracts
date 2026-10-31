@@ -18,15 +18,15 @@ contract DepositFactoryTest is Helpers {
     /// or a later chain's factory lands elsewhere and a user's money sent there is out of reach.
     /// Update it only before the first deployment, deliberately
     /// (`forge inspect DepositFactory bytecode | cast keccak`), and in script/Deploy.s.sol with it.
-    bytes32 constant PINNED_CREATION_CODE_HASH = 0x798060600150566aab91bf10516dc49b93b5b3c82979c0653d0cf52f6b12b807;
+    bytes32 constant PINNED_CREATION_CODE_HASH = 0x2b10b9bbb5fef26f7aa7a9dcc947fe8e363d87bdda2badc047b8088ec1e51ead;
     // the vectors (RECOVERY = 0xBEEF02, Helpers'), for engine/evm and web: `scripts/repin-v1.mjs` re-pins them
-    address constant FACTORY_VECTOR = 0xc53D77846d5AeE4f5761c2bf34E269c5463AdBE3;
-    address constant GENESIS_VECTOR = 0xDeE00f661aF8C8f42F13644E54B8330C6FD37fce;
-    address constant MODULE_VECTOR = 0x49155C0126445588a41C0B20a90d4758c55eE1dA;
+    address constant FACTORY_VECTOR = 0x858Bc57359a480F30Bd633E61a1b0181748ed4EF;
+    address constant GENESIS_VECTOR = 0x98b6D17bD53aA3DbF342BE0771BF3504Ae4a6325;
+    address constant MODULE_VECTOR = 0x00263C902E22C8D8d882d572aEB5aDB8e8e8795b;
     bytes32 constant SALT_VECTOR = 0xb11d2599ac7f6f79b1b23ec7b287342dc21e2257c2a12bb00798b95d1a7c305e;
-    address constant ACCOUNT_VECTOR = 0x48803fc445EF5Be9B4193F0dFA167Bf84D9c3469;
+    address constant ACCOUNT_VECTOR = 0xa20cd78D1Bb82aE6FCBa5D24F6e257edE825f972;
     /// The production factory, for the deploy script's RECOVERY (a PLACEHOLDER until the hardware wallet).
-    address constant DEPOSIT_FACTORY = 0x3a715d1072A42c1BD65aB0c9755DDFB3Bb3E39BF;
+    address constant DEPOSIT_FACTORY = 0xDC0B63830FF7496F4d0C9316089D0074f48edD88;
 
     DepositFactory f;
 

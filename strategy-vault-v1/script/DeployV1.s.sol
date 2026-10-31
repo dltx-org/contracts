@@ -22,9 +22,10 @@ import {Assets, Legs} from "../src/lib/VaultTypes.sol";
  *   6. long           Arbitrum                      —  its modules computed
  *   7. short-exit     HyperEVM (big blocks)         —
  *   8. short-exit-b   HyperEVM (big blocks)         —
- *   9. short          HyperEVM (big blocks)         —  its modules computed
- *  10. registry       Arbitrum, HyperEVM (big)      RECOVERY, version 1's members, the ETH and BTC profiles
- *  11. factory        Arbitrum, HyperEVM            RECOVERY (its registry)
+ *   9. short-route    HyperEVM (big blocks)         —
+ *  10. short          HyperEVM (big blocks)         —  its modules computed
+ *  11. registry       Arbitrum, HyperEVM (big)      RECOVERY, version 1's members, the ETH and BTC profiles
+ *  12. factory        Arbitrum, HyperEVM            RECOVERY (its registry)
  *
  *   CONTRACT=<name> EXPECTED=0x… \
  *   forge script script/DeployV1.s.sol --rpc-url <chain> --broadcast --skip-simulation --verify --private-key $DEPLOYER_KEY
@@ -74,32 +75,35 @@ contract DeployV1 is Script {
     bytes32 constant LONG_SALT = keccak256("dltx.vault.v1.long");
     bytes32 constant SHORT_EXIT_SALT = keccak256("dltx.vault.v1.short-exit");
     bytes32 constant SHORT_EXIT_B_SALT = keccak256("dltx.vault.v1.short-exit-b");
+    bytes32 constant SHORT_ROUTE_SALT = keccak256("dltx.vault.v1.short-route");
     bytes32 constant SHORT_SALT = keccak256("dltx.vault.v1.short");
     bytes32 constant FACTORY_SALT = keccak256("dltx.vault.v1.factory");
 
     // The pinned build: test/PinnedV1.t.sol's creation-code hashes (no arguments).
-    bytes32 constant V1_REGISTRY_CODE = 0x1ad116492b0f0e5d2441041301a49549c52c44ab7eb22392899d86a2d05a64e1;
-    bytes32 constant V1_UPGRADE_CODE = 0x6ac7ab0be95c9882db27fa50b5fbc2509041bb6eab69210f5994faa9a9cb9332;
-    bytes32 constant V1_HUB_FEE_CODE = 0x8ad730eca56b593a0cbe363a57b3bf2e4c71202b824d284835edbb0a33a2ac1a;
-    bytes32 constant V1_HUB_CODE = 0xe79b2bc5e5481afe61e7e961a82e81242b2935ee760fbc68ac97bfc34c451139;
-    bytes32 constant V1_LONG_EXIT_CODE = 0x44b24679ef50e7f2d795d9c14a00ab12ab7808ed74bc66530191d4d3c5259329;
-    bytes32 constant V1_LONG_REWARDS_CODE = 0x9bb731e9419ccf6b48a4206885ccceb4f0de17c855d4ab9a805ba701de83ec61;
-    bytes32 constant V1_LONG_CODE = 0xde6930a86b01b4b3140858999b587b2230004bb8aad4448eb994d55e6c960ffd;
-    bytes32 constant V1_SHORT_EXIT_CODE = 0xcf102f284dc70abedef9b3bd20699ecd1ffcdabe52b6d5755f5e696da878e4a4;
-    bytes32 constant V1_SHORT_EXIT_B_CODE = 0x21eada971aaca8f5b3cd525a28175164e6207579cadc28a79767e11d4c313e7e;
-    bytes32 constant V1_SHORT_CODE = 0xdc8b0e511d865caef80f72ad721a1486931721a59a20ae454d5a815bd462ca51;
-    bytes32 constant V1_FACTORY_CODE = 0x76909ca9564b3c0e7dab7eacc8883faf7199048d1ab6093cb0cb058f1f049ff6;
+    bytes32 constant V1_REGISTRY_CODE = 0xe48b2616616ece99d5808a0449d05070c05f105181a6803025767a8381674982;
+    bytes32 constant V1_UPGRADE_CODE = 0xfed82dcb610541112276c8aa95c704d3c89e4b15665673ef98a77668ced13384;
+    bytes32 constant V1_HUB_FEE_CODE = 0x168a8e159e1bdc84213f888fbfcbf0e8c3d5c269f9dc96e5ba3696d349fcd91b;
+    bytes32 constant V1_HUB_CODE = 0xfd7fa471f2687c6224d2223d70d46c9b0bb3c527947891a1c234f984f090822e;
+    bytes32 constant V1_LONG_EXIT_CODE = 0xf8ea056a6c89e65e3d0140524f8b0ef01c6a413909ad7d1384775830d03addf1;
+    bytes32 constant V1_LONG_REWARDS_CODE = 0x668bf2684481b0ec3f9ecfc8d4265961c08105e0cf44db90a40b770a223fd065;
+    bytes32 constant V1_LONG_CODE = 0x4e1cb9cf59e565d945d3dcc5855ed58cd44c5fc717e1fe97043d06afd1d07381;
+    bytes32 constant V1_SHORT_EXIT_CODE = 0x029e8b38714e1c400da0eda3d99a021825b4b60aa04c09a3ceb85ae128e5d7f8;
+    bytes32 constant V1_SHORT_EXIT_B_CODE = 0x06cedbe2ff70862d549f91bcfcd02138d3399d24c05e7677704ac6ec220b88a1;
+    bytes32 constant V1_SHORT_ROUTE_CODE = 0x4e45a53b4004b099aa2c97d4e0ef3333714a200c41170ea9038be499eb8f5311;
+    bytes32 constant V1_SHORT_CODE = 0x40a38048e72e5d0f3f4ab35c40dd6817d21c4172245f79997a9b0ca6ed51d2d4;
+    bytes32 constant V1_FACTORY_CODE = 0xbe8b2ce88fa238704d044b7ec8e9edd8111f2d32dd495627199edbd26c12c3b9;
     // The modules' runtime code hashes as deployed (the AAVE modules carry Arbitrum's facts as immutables).
-    bytes32 constant V1_UPGRADE_RUNTIME_HASH = 0x5bdf1679457ebff4ae3af8681feeae29636f14834340025e3463a985c481d6ef;
-    bytes32 constant V1_HUB_FEE_RUNTIME_HASH = 0xf2b7c31aa64ddf5b58dc56e6c4762dd0d24c7be02ca652189a9d518297f4d94d;
-    bytes32 constant V1_LONG_EXIT_RUNTIME_HASH = 0x7fd8bb25fc21298423202e65984b94e1d2f0ae513e290fc1a8048bc5ab19dda0;
-    bytes32 constant V1_LONG_REWARDS_RUNTIME_HASH = 0xddd16726fd1c07de2d5229347c3466dfbe8a138e13b529e2956c60f5773633bc;
-    bytes32 constant V1_SHORT_EXIT_RUNTIME_HASH = 0xd74ed1e8fc78e7dda89bd7ceae622d76e75856ee47167e1f7c4978ed907e9293;
-    bytes32 constant V1_SHORT_EXIT_B_RUNTIME_HASH = 0xaa6ee319bb56ff6473c10c36e2c35f620fa8b453c0a9541a6c78c16bc5e4f6bf;
+    bytes32 constant V1_UPGRADE_RUNTIME_HASH = 0x9c68dad54fa71396143090ac811af87bc4261607513311df72bdf6c21d6d5ac3;
+    bytes32 constant V1_HUB_FEE_RUNTIME_HASH = 0x63803b9a8925094ad40e99bacca1ee8e62b80d316e6842cf1047c2bef3a08465;
+    bytes32 constant V1_LONG_EXIT_RUNTIME_HASH = 0xe692b4628156f743cda2084f6873901798d5fde7ddd2aed49fe433b29bea68f6;
+    bytes32 constant V1_LONG_REWARDS_RUNTIME_HASH = 0x6360520231370c3cb53bb7d92f547c8244342bdc770ace57cce46af419bc38fe;
+    bytes32 constant V1_SHORT_EXIT_RUNTIME_HASH = 0x84ed06a43fe68f07e793fee055aea68199f111f653e894002289df90afd58c1d;
+    bytes32 constant V1_SHORT_EXIT_B_RUNTIME_HASH = 0xedb625e68f994bdb734accd1e84192c57921154f0a3d2129d4e5e4706cbfc164;
+    bytes32 constant V1_SHORT_ROUTE_RUNTIME_HASH = 0xa8d9109f2e429a28f6f1b760277d2dc012b8501fce387868c64394782cc6b2c9;
     // Version 1's implementations as deployed (the hub and the long carry Arbitrum's facts): the genesis.
-    bytes32 constant V1_HUB_IMPL_RUNTIME_HASH = 0x93296c09c031a16d3e9e6002939a56f23443e57bfb3a9a3c7a6d89b0f6b91965;
-    bytes32 constant V1_LONG_IMPL_RUNTIME_HASH = 0xbae325fb6e23958225c80f28ae662b52ae9bf3e6be0dfa170910666c46c4819a;
-    bytes32 constant V1_SHORT_IMPL_RUNTIME_HASH = 0xe9184660544798da239c6fe3e6dbd149f46a2481705a83f8cf51d562857f6401;
+    bytes32 constant V1_HUB_IMPL_RUNTIME_HASH = 0xfc4e7eec650b78e2a920f9a4e6f8c3dfc950ccd5f20932952038a09efc225cc0;
+    bytes32 constant V1_LONG_IMPL_RUNTIME_HASH = 0x1a6740b72cce4afc4d2b44ebefb60ca607063d56f13a47dfe9569f99fb0ac60d;
+    bytes32 constant V1_SHORT_IMPL_RUNTIME_HASH = 0x08e9b8f3679fc92978ca6cb1fbb43ba268f8fbcbcc970352a029e5298a7205c1;
 
     function run() external returns (address made) {
         // forge simulates with the project's `paris` EVM; the AAVE modules' and the long's constructors
@@ -108,10 +112,16 @@ contract DeployV1 is Script {
         (bool cancun,) = address(vm).call(abi.encodeWithSignature("setEvmVersion(string)", "cancun"));
         require(cancun, "setEvmVersion");
         _checkBuild();
+        // the audit of 2026-10-26, finding 7: never the placeholder hot key as RECOVERY, compared by its hash
+        // (scripts/repin-v1.mjs rewrites the plain address wherever it appears); `REHEARSAL=1` for a fork
+        require(
+            keccak256(abi.encode(RECOVERY)) != 0xe310e54c72952cf3217dbc2d1a2b01569ca635f47cb3b86e070d4bafa5180acf || vm.envOr("REHEARSAL", false),
+            "RECOVERY is the placeholder hot key: pin the hardware wallet's (scripts/repin-v1.mjs --recovery)"
+        );
         require(DEPLOYER.codehash == DEPLOYER_CODEHASH, "no canonical deterministic deployer on this chain");
         string memory what = vm.envString("CONTRACT");
         (bytes32 salt, bytes memory init, bytes32 runtime) = initOf(what, RECOVERY);
-        require(init.length > 0, "CONTRACT: upgrade | hub-fee | hub | long-exit | long-rewards | long | short-exit | short-exit-b | short | registry | factory");
+        require(init.length > 0, "CONTRACT: upgrade | hub-fee | hub | long-exit | long-rewards | long | short-exit | short-exit-b | short-route | short | registry | factory");
         if (keccak256(bytes(what)) == keccak256("registry")) {
             // the genesis: every implementation of this chain first, as pinned (the constructor checks them)
             uint32 here = block.chainid == 42161 ? 3 : block.chainid == 999 ? 19 : type(uint32).max;
@@ -156,6 +166,7 @@ contract DeployV1 is Script {
         require(keccak256(_code("AaveV3AssetLeg")) == V1_LONG_CODE, "not the pinned AaveV3AssetLeg");
         require(keccak256(_code("HyperCoreLegExit")) == V1_SHORT_EXIT_CODE, "not the pinned HyperCoreLegExit");
         require(keccak256(_code("HyperCoreLegExitB")) == V1_SHORT_EXIT_B_CODE, "not the pinned HyperCoreLegExitB");
+        require(keccak256(_code("HyperCoreLegRoute")) == V1_SHORT_ROUTE_CODE, "not the pinned HyperCoreLegRoute");
         require(keccak256(_code("HyperCoreLeg")) == V1_SHORT_CODE, "not the pinned HyperCoreLeg");
         require(keccak256(_code("StrategyFactory")) == V1_FACTORY_CODE, "not the pinned StrategyFactory");
     }
@@ -179,6 +190,9 @@ contract DeployV1 is Script {
         if (h == keccak256("short-exit")) return (SHORT_EXIT_SALT, _code("HyperCoreLegExit"), V1_SHORT_EXIT_RUNTIME_HASH);
         if (h == keccak256("short-exit-b")) {
             return (SHORT_EXIT_B_SALT, _code("HyperCoreLegExitB"), V1_SHORT_EXIT_B_RUNTIME_HASH);
+        }
+        if (h == keccak256("short-route")) {
+            return (SHORT_ROUTE_SALT, _code("HyperCoreLegRoute"), V1_SHORT_ROUTE_RUNTIME_HASH);
         }
         if (h == keccak256("short")) return (SHORT_SALT, _shortInit(), V1_SHORT_IMPL_RUNTIME_HASH);
         if (h == keccak256("factory")) return (FACTORY_SALT, _factoryInit(recovery), bytes32(0));
@@ -314,6 +328,8 @@ contract DeployV1 is Script {
                 V1_SHORT_EXIT_RUNTIME_HASH,
                 predict(SHORT_EXIT_B_SALT, _code("HyperCoreLegExitB")),
                 V1_SHORT_EXIT_B_RUNTIME_HASH,
+                predict(SHORT_ROUTE_SALT, _code("HyperCoreLegRoute")),
+                V1_SHORT_ROUTE_RUNTIME_HASH,
                 _upgrade(),
                 V1_UPGRADE_RUNTIME_HASH
             )

@@ -6,6 +6,11 @@ import {AaveV3AssetLegExit} from "../src/AaveV3AssetLegExit.sol";
 import {IERC20} from "../src/interfaces/Protocols.sol";
 import {Arbitrum} from "../src/lib/Pinned.sol";
 import {MockToken} from "./MocksV1.sol";
+import {LiveFeed} from "./ArbitrumForkV1.sol";
+
+interface IAaveSourcesT {
+    function getSourceOfAsset(address asset) external view returns (address);
+}
 
 interface IUniFactory {
     function createPool(address a, address b, uint24 fee) external returns (address);
@@ -97,6 +102,11 @@ contract Token1PoolForkTest is Test {
         assertEq(IUniPoolInit(pool).token1(), TOKEN);
         leg = new Token1Leg();
         vm.mockCall(Arbitrum.ORACLE, abi.encodeWithSignature("getAssetPrice(address)", TOKEN), abi.encode(PRICE));
+        // its source, for the sales' freshness check (finding 3): a live feed (only its time is read)
+        address ethSource = IAaveSourcesT(Arbitrum.ORACLE).getSourceOfAsset(Arbitrum.WETH);
+        vm.mockCall(
+            Arbitrum.ORACLE, abi.encodeWithSignature("getSourceOfAsset(address)", TOKEN), abi.encode(address(new LiveFeed(ethSource)))
+        );
         leg.set(TOKEN, pool, 500, 18, false, 100);
         // at AAVE's price: 1 token (1e18) for 2,000 USDC (2e9), in the pool's token1-per-token0 form
         IUniPoolInit(pool).initialize(_atBand(0));
@@ -148,6 +158,17 @@ contract Token1PoolForkTest is Test {
         assertLt(paid, 200e18, "a partial fill: the sale stopped at the band");
         assertEq(_price(), limit, "the pool stopped exactly at the limit");
         vm.expectRevert(bytes4(keccak256("PoolOffOracle()")));
+        leg.exitSale(1e18);
+    }
+
+    /// The audit of 2026-10-26, low 15: a pool with no liquidity inside the band pays nothing without
+    /// reverting; the sale now fails (a failed exit part, logged) instead of succeeding at selling nothing.
+    function test_fork_audit_L15_aSaleIntoAnEmptyBandFails() public onFork {
+        address empty = IUniFactory(UNI_FACTORY).createPool(Arbitrum.USDC, TOKEN, 3000);
+        leg.set(TOKEN, empty, 3000, 18, false, 100); // band min(50, 100 − 30) = 50 bp
+        IUniPoolInit(empty).initialize(leg.bandLimit() - 1); // inside the band, no position at all
+        MockToken(TOKEN).mint(address(leg), 1e18);
+        vm.expectRevert(bytes4(keccak256("ZeroAmount()")));
         leg.exitSale(1e18);
     }
 }

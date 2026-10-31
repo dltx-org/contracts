@@ -96,7 +96,8 @@ interface IHyperCoreLegV1 {
     function beginExit(uint256 deadline, bytes memory signature) external;
     function beginExitStopped() external;
     function bridgeOut() external;
-    function burner() external view returns (address);
+    function burning() external view returns (bool);
+    function othersPending() external view returns (uint256);
     function cancel(uint32 asset, bool byCloid, uint128 id) external;
     function cancelPendingAction(uint8 kind, bytes32 target, uint256 due, uint256 deadline, bytes memory signature)
         external;
@@ -109,6 +110,7 @@ interface IHyperCoreLegV1 {
     function exitAgent() external view returns (address);
     function exitModule() external view returns (address);
     function exitModuleB() external view returns (address);
+    function routeModule() external view returns (address);
     function exitStartedAt() external view returns (uint64);
     function exitStatus()
         external
@@ -164,7 +166,7 @@ interface IHyperCoreLegV1 {
     function memberType() external view returns (uint8);
     function notifyLink(uint8 k) external;
     function opCount() external view returns (uint64);
-    function order(bool isBuy, uint64 sz, bool reduceOnly) external;
+    function order(bool isBuy, uint64 sz, bool reduceOnly, uint128 cloid) external;
     function orderBoundBp() external view returns (uint16);
     function owner() external view returns (address);
     function ownerAction(uint8 action, address agent, bytes32 credential, uint256 deadline, bytes memory signature)

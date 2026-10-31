@@ -13,7 +13,9 @@ user owns, which DLTX operates within on-chain limits and the user can always ex
 **Status.** Version 0 of the deposit account and of the strategy vaults is deployed on Arbitrum and
 HyperEVM, not audited, and not open to users. Version 1 (`strategy-vault-v1` and the
 owner-upgradeable deposit account in `deposit-account`) is built and under security review, **not
-deployed**: do not treat this code as live or audited. `repay-with-collateral` is deployed on
+deployed**: do not treat this code as live or audited. It now includes the Hyperliquid contract
+route, where a strategy's orders go through its own contract with no agent; that code is recent, not
+audited, and still changes before version 1 is deployed. `repay-with-collateral` is deployed on
 Arbitrum.
 
 How the contracts fit together, every function, and the deployed addresses:
@@ -26,4 +28,4 @@ five years after their first mainnet deployment. `repay-with-collateral` is MIT.
 
 **Security.** Report a vulnerability privately, never in a public issue: see [`SECURITY.md`](SECURITY.md).
 
-Exported from DLTX's development repository at `0e21d7ea2`.
+Exported from DLTX's development repository at `dd0f96651`.

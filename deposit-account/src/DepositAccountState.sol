@@ -32,6 +32,9 @@ interface IDepositFactory {
     function stopped(uint256 version) external view returns (bool);
     /// The listed version of an implementation, 0 for an unlisted address.
     function versionOf(address implementation) external view returns (uint256);
+    /// The code hash a listed implementation was accepted with (zero for an unlisted address): an
+    /// upgrade runs only those bytes (the external audit's finding 4).
+    function codeHashOf(address implementation) external view returns (bytes32);
 }
 
 /// What every vault factory implements (slice 2's `authorisedFor`, unchanged by amendment 1): the
@@ -172,8 +175,11 @@ abstract contract DepositAccountState {
         keccak256("RemoveCredential(uint8 kind,bytes32 x,bytes32 y,uint256 nonce,uint256 deadline)");
     bytes32 public constant SET_WITHDRAWAL_ADDRESS_TYPEHASH =
         keccak256("SetWithdrawalAddress(address withdrawalAddress,uint256 nonce,uint256 deadline)");
-    bytes32 public constant SCHEDULE_UPGRADE_TYPEHASH =
-        keccak256("ScheduleUpgrade(address implementation,uint256 nonce,uint256 deadline)");
+    /// The owner signs the code, not only its address (the external audit's finding 4): the version and
+    /// the code hash the factory accepted, both checked at the schedule, the hash again at the apply.
+    bytes32 public constant SCHEDULE_UPGRADE_TYPEHASH = keccak256(
+        "ScheduleUpgrade(address implementation,uint256 codeVersion,bytes32 codeHash,uint256 nonce,uint256 deadline)"
+    );
     // cancellations: at the home only, no nonce (the change and its due time name them)
     bytes32 public constant CANCEL_REMOVAL_TYPEHASH =
         keccak256("CancelRemoval(uint8 kind,bytes32 x,bytes32 y,uint256 due,uint256 deadline)");

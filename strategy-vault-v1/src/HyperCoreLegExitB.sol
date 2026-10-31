@@ -5,22 +5,34 @@ import {HyperCoreLegState} from "./HyperCoreLegState.sol";
 import {IDepositOwner, OwnerDomain} from "./interfaces/IDepositOwner.sol";
 import {IERC20} from "./interfaces/Protocols.sol";
 import {HyperCore} from "./lib/HyperCore.sol";
+import {RouteMath} from "./lib/RouteMath.sol";
 import {Holding, OwnerMessages} from "./lib/VaultTypes.sol";
-import {AssetProfile, Profiles} from "./Types.sol";
+import {IRegistryV1} from "./Interfaces.sol";
+import {AssetProfile, HyperCoreParams, Profiles, Routes, Sides} from "./Types.sol";
 
 /*
  * The Hyperliquid leg's EXIT MODULE, part B (version 0's `ShortVaultExit`, split for EIP-170:
  * asset-profiles-design.md §3.2): the owner's signed exit order, the residue sweep, `exitStatus`, the
- * profile's check on HyperEVM (AP-3), `receiveMint`, `report` and `holdings`, run only by DELEGATECALL
- * from an instance (`checkProfile` aside: a view the registry asks the implementation), in its storage.
+ * profile's check on HyperEVM (AP-3) and the parameters' (`validateParams`), `receiveMint`, `report` and
+ * `holdings`, run only by DELEGATECALL from an instance (`checkProfile` and `validateParams` aside: views
+ * the registry and the factory ask the implementation), in its storage.
  */
 contract HyperCoreLegExitB is HyperCoreLegState {
+    uint16 internal constant MIN_BOUND_BP = 30;
+    uint16 internal constant MAX_ORDER_BOUND_BP = 1000;
+    uint16 internal constant MAX_FAST_FEE_CAP_BP = 50;
+    uint16 internal constant MAX_FEE_BUDGET_BP = 500;
+
     // ── the profile (AP-3) ────────────────────────────────────────────────────────────────────────────
 
     /// The short's part of a profile, checked on HyperEVM: a DEX 0 perp whose `perpAssetInfo` coin and
     /// szDecimals are the profile's, the underlying that coin, and the short's id derived from it, never
     /// chosen (`keccak256("dltx.asset." ‖ coin)`), so an ETH perp can never report as BTC.
     function checkProfile(AssetProfile calldata p) external view {
+        _checkProfile(p);
+    }
+
+    function _checkProfile(AssetProfile memory p) internal view {
         if (p.perp >= SPOT_ASSET_OFFSET || p.perpCoin == bytes32(0)) revert BadProfile();
         (bool ok, bytes memory out) = HyperCore.PX_PERP_ASSET_INFO.staticcall(abi.encode(p.perp));
         if (!ok || out.length == 0) revert BadProfile();
@@ -30,6 +42,38 @@ contract HyperCoreLegExitB is HyperCoreLegState {
             !fits || coin != p.perpCoin || info.szDecimals != p.szDecimals || p.underlying != p.perpCoin
                 || p.shortAsset != Profiles.assetOf(p.perpCoin)
         ) revert BadProfile();
+    }
+
+    /// A profile open to new strategies in this chain's registry, its perp, coin and asset id the ones
+    /// shown, and sane bounds; anything else reverts (AP-4, AP-5). The contract route's (spec §4.1,
+    /// §13.2): a known route and side; a cap from 1x to 20x and to the perp's max leverage; both bands
+    /// from 10 bp to the order bound, the reductions' compounded cost `(1 + r)(1 + FEE_BP) − 1` at most
+    /// half the perp's maintenance rate `1 / (2 × max)`, exactly; a builder fee of at most 2 bp.
+    /// Here, not in the leg, for size: the factory asks the implementation (its fallback dispatches here)
+    /// and the leg's `_initParams` asks again; both also check the profile's perp on HyperCore (AP-3).
+    function validateParams(address r, bytes calldata params) external view {
+        HyperCoreParams memory p = abi.decode(params, (HyperCoreParams));
+        AssetProfile memory a = IRegistryV1(r).profileOf(p.profile);
+        if (
+            !IRegistryV1(r).profileOpen(p.profile) || p.perp != a.perp || p.coin != a.perpCoin || p.asset != a.shortAsset
+                || p.orderBoundBp < MIN_BOUND_BP || p.orderBoundBp > MAX_ORDER_BOUND_BP
+                || p.fastFeeCapBp > MAX_FAST_FEE_CAP_BP || p.feeBudgetBp == 0 || p.feeBudgetBp > MAX_FEE_BUDGET_BP
+        ) revert BadParams();
+        uint256 maxLev = HyperCore.perpMaxLeverage(p.perp);
+        if (
+            // the short side only, until a pair uses the long one (its growth is untested; the final review)
+            (p.route != Routes.AGENT && p.route != Routes.CONTRACT) || p.side != Sides.SHORT
+                || p.maxLeverageX100 < 100 || p.maxLeverageX100 > MAX_LEVERAGE_X100 || p.maxLeverageX100 > maxLev * 100
+                || p.growBoundBp < MIN_BAND_BP || p.growBoundBp > p.orderBoundBp || p.reduceBoundBp < MIN_BAND_BP
+                || p.reduceBoundBp > p.orderBoundBp
+                // c_r ≤ mmr / 2 = 1 / (4 × max): the perp's maintenance ceiling
+                || p.reduceBoundBp > RouteMath.ceilingBp(maxLev)
+                || p.builderFeeX10 > MAX_BUILDER_FEE_X10 || (p.builder == address(0) && p.builderFeeX10 != 0)
+                // the referral setup is the contract route's (spec §16): on the agent route the engine's
+                // agent sets the referrer, and the confirm that releases money is refused there
+                || (p.referralSetup && p.route != Routes.CONTRACT)
+        ) revert BadParams();
+        _checkProfile(a);
     }
 
     /// The owner's signed order (decision 30), in exit: where no independent price exists (a HIP-3
@@ -87,7 +131,7 @@ contract HyperCoreLegExitB is HyperCoreLegState {
             uint64 t = HyperCore.boundedPx(bid * scale, orderBoundBp, false, maxDecimals);
             if (t > px) px = t;
         }
-        HyperCore.orderIoc(asset, isBuy, px, size, !spot);
+        HyperCore.orderIoc(asset, isBuy, px, size, !spot, 0);
     }
 
     /// Starts the 24 hours an owner wallet credential must stand before the residue may be swept to it
@@ -103,6 +147,9 @@ contract HyperCoreLegExitB is HyperCoreLegState {
     /// USDC, at most the residue listed for `token`, only to an owner wallet credential that has stood
     /// 24 hours in this chain's copy of the record (seen by `proposeSweep`) and still stands. Anyone.
     function sweepResidue(uint64 token, address to) external delegated nonReentrant inExit counted {
+        // HyperEVM's own USDC to the hub first: a stranger's wei there would otherwise keep the exit closing
+        // (the audit of 2026-10-26, low 9)
+        _sendAllToHub();
         (uint8 state, uint64[PINNED] memory residue,) = _status();
         if (state != RECOVERED_WITH_RESIDUE) revert NotResidue();
         uint256 i = _pinnedIndex(token);
@@ -135,7 +182,7 @@ contract HyperCoreLegExitB is HyperCoreLegState {
     function _status() internal view returns (uint8 state, uint64[PINNED] memory residue, uint256 flags) {
         State memory s = _read();
         bool closing = !s.gate || s.budgetMode || s.wd > 0 || s.value0 > DUST_VALUE || s.spotUsdcTotal >= DUST_USDC
-            || IERC20(USDC).balanceOf(address(this)) > 0;
+            || _ownUsdc(USDC) * 100 >= DUST_USDC; // a stranger's waits apart; under 0.01 USDC Circle may not burn
         for (uint256 i; i < _dexes.length; ++i) {
             if (s.ok[i] && s.ms[i].accountValue > DUST_VALUE) closing = true;
         }
@@ -143,7 +190,8 @@ contract HyperCoreLegExitB is HyperCoreLegState {
         for (uint256 i; i < PINNED; ++i) {
             (uint64 token,) = _pinned(i);
             uint64 bal = i == 0 ? s.spotHype : HyperCore.spotAvailable(address(this), token);
-            uint64 held = i == 0 ? (bal > HYPE_FEE_RESERVE ? bal - HYPE_FEE_RESERVE : 0) : bal;
+            uint64 reserve = _hypeReserve();
+            uint64 held = i == 0 ? (bal > reserve ? bal - reserve : 0) : bal;
             uint256 px = i == 0 ? s.hypePx : 1e8;
             uint256 value = uint256(held) * px / 1e8; // Core wei of USDC (both 8 dp)
             uint256 saleValue = uint256(held / STEP_WEI) * HyperCore.boundedPx(px, orderBoundBp, false, 6) / 100;
@@ -156,7 +204,7 @@ contract HyperCoreLegExitB is HyperCoreLegState {
         if (toldPending != 0) flags |= F_PARTNER_PENDING;
         if (s.budgetMode) flags |= F_BUDGET;
         if (s.waitingOwner) flags |= F_WAITING_OWNER;
-        if (s.gate && s.spotHype < HYPE_FEE_RESERVE && s.spotUsdc >= DUST_USDC) {
+        if (s.gate && s.spotHype < _hypeReserve() && s.spotUsdc >= DUST_USDC) {
             // no purchase can happen: three made, none placeable, the spot or the budget too small (CR-D2)
             (,, uint64 cost) = _purchase(s.hypePx);
             if (

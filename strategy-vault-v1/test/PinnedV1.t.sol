@@ -39,36 +39,38 @@ contract PinnedV1Test is Test {
     address constant TRANSMITTER = 0x81D40F21F12A8F0E3252Bccb954D722d4c464B64;
     address constant HYPER_STATE = 0x00000000000000000000000000000000c0eC0dE0;
 
-    bytes32 constant V1_REGISTRY_CODE = 0x1ad116492b0f0e5d2441041301a49549c52c44ab7eb22392899d86a2d05a64e1;
-    bytes32 constant V1_UPGRADE_CODE = 0x6ac7ab0be95c9882db27fa50b5fbc2509041bb6eab69210f5994faa9a9cb9332;
-    bytes32 constant V1_HUB_FEE_CODE = 0x8ad730eca56b593a0cbe363a57b3bf2e4c71202b824d284835edbb0a33a2ac1a;
-    bytes32 constant V1_HUB_CODE = 0xe79b2bc5e5481afe61e7e961a82e81242b2935ee760fbc68ac97bfc34c451139;
-    bytes32 constant V1_LONG_EXIT_CODE = 0x44b24679ef50e7f2d795d9c14a00ab12ab7808ed74bc66530191d4d3c5259329;
-    bytes32 constant V1_LONG_REWARDS_CODE = 0x9bb731e9419ccf6b48a4206885ccceb4f0de17c855d4ab9a805ba701de83ec61;
-    bytes32 constant V1_LONG_CODE = 0xde6930a86b01b4b3140858999b587b2230004bb8aad4448eb994d55e6c960ffd;
-    bytes32 constant V1_SHORT_EXIT_CODE = 0xcf102f284dc70abedef9b3bd20699ecd1ffcdabe52b6d5755f5e696da878e4a4;
-    bytes32 constant V1_SHORT_EXIT_B_CODE = 0x21eada971aaca8f5b3cd525a28175164e6207579cadc28a79767e11d4c313e7e;
-    bytes32 constant V1_SHORT_CODE = 0xdc8b0e511d865caef80f72ad721a1486931721a59a20ae454d5a815bd462ca51;
-    bytes32 constant V1_FACTORY_CODE = 0x76909ca9564b3c0e7dab7eacc8883faf7199048d1ab6093cb0cb058f1f049ff6;
-    bytes32 constant V1_UPGRADE_RUNTIME_HASH = 0x5bdf1679457ebff4ae3af8681feeae29636f14834340025e3463a985c481d6ef;
-    bytes32 constant V1_HUB_FEE_RUNTIME_HASH = 0xf2b7c31aa64ddf5b58dc56e6c4762dd0d24c7be02ca652189a9d518297f4d94d;
-    bytes32 constant V1_LONG_EXIT_RUNTIME_HASH = 0x7fd8bb25fc21298423202e65984b94e1d2f0ae513e290fc1a8048bc5ab19dda0;
-    bytes32 constant V1_LONG_REWARDS_RUNTIME_HASH = 0xddd16726fd1c07de2d5229347c3466dfbe8a138e13b529e2956c60f5773633bc;
-    bytes32 constant V1_SHORT_EXIT_RUNTIME_HASH = 0xd74ed1e8fc78e7dda89bd7ceae622d76e75856ee47167e1f7c4978ed907e9293;
-    bytes32 constant V1_SHORT_EXIT_B_RUNTIME_HASH = 0xaa6ee319bb56ff6473c10c36e2c35f620fa8b453c0a9541a6c78c16bc5e4f6bf;
+    bytes32 constant V1_REGISTRY_CODE = 0xe48b2616616ece99d5808a0449d05070c05f105181a6803025767a8381674982;
+    bytes32 constant V1_UPGRADE_CODE = 0xfed82dcb610541112276c8aa95c704d3c89e4b15665673ef98a77668ced13384;
+    bytes32 constant V1_HUB_FEE_CODE = 0x168a8e159e1bdc84213f888fbfcbf0e8c3d5c269f9dc96e5ba3696d349fcd91b;
+    bytes32 constant V1_HUB_CODE = 0xfd7fa471f2687c6224d2223d70d46c9b0bb3c527947891a1c234f984f090822e;
+    bytes32 constant V1_LONG_EXIT_CODE = 0xf8ea056a6c89e65e3d0140524f8b0ef01c6a413909ad7d1384775830d03addf1;
+    bytes32 constant V1_LONG_REWARDS_CODE = 0x668bf2684481b0ec3f9ecfc8d4265961c08105e0cf44db90a40b770a223fd065;
+    bytes32 constant V1_LONG_CODE = 0x4e1cb9cf59e565d945d3dcc5855ed58cd44c5fc717e1fe97043d06afd1d07381;
+    bytes32 constant V1_SHORT_EXIT_CODE = 0x029e8b38714e1c400da0eda3d99a021825b4b60aa04c09a3ceb85ae128e5d7f8;
+    bytes32 constant V1_SHORT_EXIT_B_CODE = 0x06cedbe2ff70862d549f91bcfcd02138d3399d24c05e7677704ac6ec220b88a1;
+    bytes32 constant V1_SHORT_ROUTE_CODE = 0x4e45a53b4004b099aa2c97d4e0ef3333714a200c41170ea9038be499eb8f5311;
+    bytes32 constant V1_SHORT_CODE = 0x40a38048e72e5d0f3f4ab35c40dd6817d21c4172245f79997a9b0ca6ed51d2d4;
+    bytes32 constant V1_FACTORY_CODE = 0xbe8b2ce88fa238704d044b7ec8e9edd8111f2d32dd495627199edbd26c12c3b9;
+    bytes32 constant V1_UPGRADE_RUNTIME_HASH = 0x9c68dad54fa71396143090ac811af87bc4261607513311df72bdf6c21d6d5ac3;
+    bytes32 constant V1_HUB_FEE_RUNTIME_HASH = 0x63803b9a8925094ad40e99bacca1ee8e62b80d316e6842cf1047c2bef3a08465;
+    bytes32 constant V1_LONG_EXIT_RUNTIME_HASH = 0xe692b4628156f743cda2084f6873901798d5fde7ddd2aed49fe433b29bea68f6;
+    bytes32 constant V1_LONG_REWARDS_RUNTIME_HASH = 0x6360520231370c3cb53bb7d92f547c8244342bdc770ace57cce46af419bc38fe;
+    bytes32 constant V1_SHORT_EXIT_RUNTIME_HASH = 0x84ed06a43fe68f07e793fee055aea68199f111f653e894002289df90afd58c1d;
+    bytes32 constant V1_SHORT_EXIT_B_RUNTIME_HASH = 0xedb625e68f994bdb734accd1e84192c57921154f0a3d2129d4e5e4706cbfc164;
+    bytes32 constant V1_SHORT_ROUTE_RUNTIME_HASH = 0xa8d9109f2e429a28f6f1b760277d2dc012b8501fce387868c64394782cc6b2c9;
 
     // the vectors (RECOVERY, the deploy script's: a PLACEHOLDER until the hardware wallet's address)
-    address constant V1_REGISTRY = 0xC83716D42D6834098c3900bF73696876440489A8;
-    address constant V1_FACTORY = 0xF6989dDcf67CcbC1077C9054D62F8A1363623d1d; // PINNED_VAULT_FACTORY
+    address constant V1_REGISTRY = 0x738F5d2b4B5db95A6741a07f6E8EdaAf56fB1eC5;
+    address constant V1_FACTORY = 0x05C8c664b5484ed764f8C53e72c182fE071ceAA9; // PINNED_VAULT_FACTORY
 
     // version 1's implementations (deterministic, independent of RECOVERY) and manifest: the genesis
-    address constant V1_HUB_IMPL = 0x8Eb1fC836296D115C8c0BDbab080E0f98E22633B;
-    bytes32 constant V1_HUB_IMPL_RUNTIME_HASH = 0x93296c09c031a16d3e9e6002939a56f23443e57bfb3a9a3c7a6d89b0f6b91965;
-    address constant V1_LONG_IMPL = 0x803E6538f9b7d5A37AfE45C5615c3D774773870b;
-    bytes32 constant V1_LONG_IMPL_RUNTIME_HASH = 0xbae325fb6e23958225c80f28ae662b52ae9bf3e6be0dfa170910666c46c4819a;
-    address constant V1_SHORT_IMPL = 0x2d6916F8f81ae37C91f7E228e7cA45c92196d0ca;
-    bytes32 constant V1_SHORT_IMPL_RUNTIME_HASH = 0xe9184660544798da239c6fe3e6dbd149f46a2481705a83f8cf51d562857f6401;
-    bytes32 constant V1_MANIFEST = 0xb6f68225044351f415b4a65c25e4979ec677ea1b10c54f9ae90935ba3e2567b9;
+    address constant V1_HUB_IMPL = 0x04731698C1f9DF9b548659032c6588C4C2B06264;
+    bytes32 constant V1_HUB_IMPL_RUNTIME_HASH = 0xfc4e7eec650b78e2a920f9a4e6f8c3dfc950ccd5f20932952038a09efc225cc0;
+    address constant V1_LONG_IMPL = 0x731630faE2Eb852cBB8DbF2DD4aFf2e946F6c3B8;
+    bytes32 constant V1_LONG_IMPL_RUNTIME_HASH = 0x1a6740b72cce4afc4d2b44ebefb60ca607063d56f13a47dfe9569f99fb0ac60d;
+    address constant V1_SHORT_IMPL = 0x2117461DAE79dA83b2d74D4E97F0a8e336229956;
+    bytes32 constant V1_SHORT_IMPL_RUNTIME_HASH = 0x08e9b8f3679fc92978ca6cb1fbb43ba268f8fbcbcc970352a029e5298a7205c1;
+    bytes32 constant V1_MANIFEST = 0x4d87a3d47fadf9333e7bc107dcdffd93fb111da9bb7b03bbf0065c2480788df7;
     bytes32 constant ETH_PROFILE = 0x39a05622f1cdb348a942e419f7692092319f00b31ca5350f66a556fe25a6434a;
     bytes32 constant BTC_PROFILE = 0xd714870e84be29bc90f0a4ac10bab72a63e27a5c4fc139dcdd2aac3070300d12;
 
@@ -101,6 +103,7 @@ contract PinnedV1Test is Test {
         _check("AaveV3AssetLeg", V1_LONG_CODE);
         _check("HyperCoreLegExit", V1_SHORT_EXIT_CODE);
         _check("HyperCoreLegExitB", V1_SHORT_EXIT_B_CODE);
+        _check("HyperCoreLegRoute", V1_SHORT_ROUTE_CODE);
         _check("HyperCoreLeg", V1_SHORT_CODE);
         _check("StrategyFactory", V1_FACTORY_CODE);
     }
@@ -126,10 +129,12 @@ contract PinnedV1Test is Test {
         address fee = _deploy("hub-fee");
         address se = _deploy("short-exit");
         address seb = _deploy("short-exit-b");
+        address sr = _deploy("short-route");
         _checkRuntime("upgrade", up, V1_UPGRADE_RUNTIME_HASH);
         _checkRuntime("hub-fee", fee, V1_HUB_FEE_RUNTIME_HASH);
         _checkRuntime("short-exit", se, V1_SHORT_EXIT_RUNTIME_HASH);
         _checkRuntime("short-exit-b", seb, V1_SHORT_EXIT_B_RUNTIME_HASH);
+        _checkRuntime("short-route", sr, V1_SHORT_ROUTE_RUNTIME_HASH);
         address short = _deploy("short");
         _checkVector("V1_SHORT_IMPL", short, V1_SHORT_IMPL);
         _checkRuntime("V1_SHORT_IMPL_RUNTIME_HASH", short, V1_SHORT_IMPL_RUNTIME_HASH);
@@ -252,6 +257,7 @@ contract PinnedV1Test is Test {
         _deploy("upgrade");
         _deploy("short-exit");
         _deploy("short-exit-b");
+        _deploy("short-route");
         address short = _deploy("short");
         _checkVector("V1_SHORT_IMPL", short, V1_SHORT_IMPL);
         _checkRuntime("V1_SHORT_IMPL_RUNTIME_HASH", short, V1_SHORT_IMPL_RUNTIME_HASH);

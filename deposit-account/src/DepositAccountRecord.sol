@@ -10,10 +10,12 @@ import {Credential, DepositAccountState, IDepositFactory, IMessageTransmitterV2}
  * in the account's storage (`DepositAccountState`, the one layout both share). It holds THE OWNER
  * RECORD: the record changes and their cancellations, the record's copies, and the account's UPGRADE:
  *   - at the home (Arbitrum), the owner signs `ScheduleUpgrade` for a version its factory lists above
- *     this one; anyone applies it 24 hours later unless any credential in effect cancelled it first;
- *     one upgrade pending at most, never replaced (Q13);
+ *     this one, naming its version and the code hash the factory accepted; anyone applies it 24 hours
+ *     later unless any credential in effect cancelled it first, and only while the code at that
+ *     address still has that hash; one upgrade pending at most, never replaced (Q13);
  *   - the copies never take an owner's upgrade: they follow the implementation the home applied, by
- *     the home's own Circle message, forward only, if their own chain's factory lists it.
+ *     the home's own Circle message (its address and code hash), forward only, if their own chain's
+ *     factory lists that address with that same hash and the code there still has it.
  *
  * It refuses a direct call (`delegated`): only an account runs it. The two functions that write the
  * ERC-1967 slot also refuse unless the running account is initialised, a test of state (§3.3,
@@ -141,18 +143,29 @@ contract DepositAccountRecord is DepositAccountState {
     // ── the upgrade at the home (owner-upgrades-design.md §3.4) ─────────────────────────────────
 
     /// A record change: the owner moves this account to `impl`, a version its factory lists above this
-    /// one (forward only, Q3), after 24 hours. Refused while an upgrade is pending (no replacement: the
-    /// owner cancels and signs again) and from a credential whose removal is pending.
-    function scheduleUpgrade(address impl, uint256 nonce, uint256 deadline, bytes calldata signature)
-        external
-        delegated
-    {
-        bytes32 signer =
-            _recordChange(keccak256(abi.encode(SCHEDULE_UPGRADE_TYPEHASH, impl, nonce, deadline)), nonce, deadline, signature);
+    /// one (forward only, Q3), after 24 hours. The owner signs the code, not an opaque address (the
+    /// external audit's finding 4): `codeVersion` must be the version the factory lists `impl` at, and
+    /// `codeHash` both the hash it accepted and the hash of the code at `impl` now. Refused while an
+    /// upgrade is pending (no replacement: the owner cancels and signs again) and from a credential
+    /// whose removal is pending.
+    function scheduleUpgrade(
+        address impl,
+        uint256 codeVersion,
+        bytes32 codeHash,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external delegated {
+        bytes32 signer = _recordChange(
+            keccak256(abi.encode(SCHEDULE_UPGRADE_TYPEHASH, impl, codeVersion, codeHash, nonce, deadline)),
+            nonce,
+            deadline,
+            signature
+        );
         if (_removalDue[signer] != 0) revert RemovalPending();
         if (_upgradeDue != 0) revert AlreadyPending();
-        uint256 v = IDepositFactory(factory).versionOf(impl);
-        if (v <= CODE_VERSION()) revert BadImplementation();
+        uint256 v = _listedCode(impl, codeHash);
+        if (v <= CODE_VERSION() || v != codeVersion) revert BadImplementation();
         uint256 due = block.timestamp + DELAY;
         (_upgradeTo, _upgradeDue, _upgradeBy) = (impl, uint64(due), signer);
         emit UpgradeScheduled(impl, v, due);
@@ -171,7 +184,9 @@ contract DepositAccountRecord is DepositAccountState {
     /// token or recipient callback must not switch the code under a withdrawal). First every change
     /// already due lands under the code that accepted it; then the schedule dies with its signer: it is
     /// cleared, not applied, unless the credential that scheduled it is still in effect with no
-    /// removal pending; then the slot moves. No migration call (Q4, I8).
+    /// removal pending; it dies too if the code at its address no longer has the hash the factory
+    /// accepted (an EIP-7702 delegation re-pointed, the external audit's finding 4); then the slot
+    /// moves. No migration call (Q4, I8).
     function applyUpgrade() external delegated {
         if (_creds.length == 0) revert NotInitialised(); // onlyProxy, by state
         if (!isHome()) revert NotHome();
@@ -183,16 +198,17 @@ contract DepositAccountRecord is DepositAccountState {
         address impl = _upgradeTo;
         bytes32 by = _upgradeBy;
         _clearUpgrade();
-        if (!_inEffect(by) || _removalDue[by] != 0) {
+        if (!_inEffect(by) || _removalDue[by] != 0 || _listedCode(impl, impl.codehash) == 0) {
             emit UpgradeCancelled(impl, due);
             return;
         }
         _writeImplementation(impl);
     }
 
-    /// Anyone, at the home, as often as needed: sends the implementation this account runs now to this
-    /// same address on `domain`, with the time, through Circle's MessageTransmitterV2 (no burn, no fee,
-    /// finalized, any relayer). The copy follows it if its chain lists it and it is higher (§3.5).
+    /// Anyone, at the home, as often as needed: sends the implementation this account runs now, its
+    /// code hash and the time to this same address on `domain`, through Circle's MessageTransmitterV2
+    /// (no burn, no fee, finalized, any relayer). The copy follows it if its chain lists it, with that
+    /// hash, and it is higher (§3.5): the code the owner signed for at the home, on every chain.
     function publishUpgrade(uint32 domain) external delegated {
         if (_creds.length == 0) revert NotInitialised();
         if (!isHome()) revert NotHome();
@@ -203,7 +219,7 @@ contract DepositAccountRecord is DepositAccountState {
             bytes32(uint256(uint160(address(this)))),
             bytes32(0),
             FINALIZED,
-            abi.encode(UPGRADE_TAG, impl, uint64(block.timestamp))
+            abi.encode(UPGRADE_TAG, impl, impl.codehash, uint64(block.timestamp))
         );
         emit UpgradePublished(domain, impl);
     }
@@ -252,8 +268,10 @@ contract DepositAccountRecord is DepositAccountState {
             abi.decode(messageBody, (bytes32, uint64, uint64, address, Credential[]));
         if (tag != RECORD_TAG) revert BadMessage();
         if (_synced) {
-            // afterwards, a strictly higher version, or the same one published later (a renewal)
-            if (v < _version || publishedAt <= recordPublishedAt) {
+            // afterwards, a strictly higher version, or the same one published later (a renewal):
+            // (version, publishedAt) compared in that order, so a higher version published in the same
+            // second as the record held is never lost (the external audit's L12)
+            if (v < _version || (v == _version && publishedAt <= recordPublishedAt)) {
                 emit RecordIgnored(v, _version);
                 return true;
             }
@@ -286,15 +304,16 @@ contract DepositAccountRecord is DepositAccountState {
     // ── internals ────────────────────────────────────────────────────────────────────────────
 
     /// The home's applied implementation, at a copy (§3.5): reverts while this chain's factory does not
-    /// list it (the message stays relayable until it does); ignored (consumed) if published before this
+    /// list it with the code hash the home sent, or the code there does not have that hash (the message
+    /// stays relayable until it does; the external audit's finding 4); ignored (consumed) if published before this
     /// copy was deployed, before the last upgrade it applied (two messages of the same second both
     /// count: a replay is refused as not higher), more than UPGRADE_TTL ago, or not higher than this
     /// version (never backwards); else every due change settles and the slot moves.
     /// No 24 hours here: they were served at the home. Never under the money functions' lock.
     function _receiveUpgrade(bytes calldata body) internal returns (bool) {
         if (_entered) revert Reentered();
-        (, address impl, uint64 publishedAt) = abi.decode(body, (bytes32, address, uint64));
-        uint256 v = IDepositFactory(factory).versionOf(impl);
+        (, address impl, bytes32 codeHash, uint64 publishedAt) = abi.decode(body, (bytes32, address, bytes32, uint64));
+        uint256 v = _listedCode(impl, codeHash);
         if (v == 0) revert BadImplementation();
         if (
             publishedAt < _deployedAt || publishedAt < _upgradePublishedAt
@@ -310,10 +329,11 @@ contract DepositAccountRecord is DepositAccountState {
     }
 
     /// An authorisation from the home (amendment 1, §2.4), at a synced copy only (its withdrawal address
-    /// and credentials come from the record; an unsynced copy reverts, so the message stays relayable):
-    /// each id once, adding its allowance and trusting its factory on this chain.
+    /// and credentials come from the record; an unsynced copy, never reached or past RECORD_TTL,
+    /// reverts, so the message stays relayable until the home's record arrives again; the external
+    /// audit's L7): each id once, adding its allowance and trusting its factory on this chain.
     function _receiveAuthorisation(bytes calldata body) internal returns (bool) {
-        if (!_synced) revert NotSynced();
+        if (!synced()) revert NotSynced();
         (, uint256 id, address vaultFactory, bytes32 strategyId, bytes32 configHash, uint256 amount) =
             abi.decode(body, (bytes32, uint256, address, bytes32, bytes32, uint256));
         if (authorisationApplied[id]) {
@@ -334,6 +354,15 @@ contract DepositAccountRecord is DepositAccountState {
         allowance[key] = remaining;
         emit AuthorisationApplied(id, key, amount, remaining);
         return true;
+    }
+
+    /// `impl`'s version in this code's factory list, or 0 unless it is listed with `codeHash` and the
+    /// code at `impl` has that hash now (the external audit's finding 4: an upgrade runs the bytes the
+    /// listing's 7 days showed, never what an address has come to hold since).
+    function _listedCode(address impl, bytes32 codeHash) internal view returns (uint256 v) {
+        IDepositFactory f = IDepositFactory(factory);
+        if (codeHash == bytes32(0) || impl.codehash != codeHash || f.codeHashOf(impl) != codeHash) return 0;
+        v = f.versionOf(impl);
     }
 
     function _clearUpgrade() internal {

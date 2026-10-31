@@ -76,9 +76,9 @@ contract CombinedReviewShortCompatTest is ShortVaultCompatTest {
         address thief = makeAddr("thief-agent");
         uint256 d = block.timestamp + 3 days;
         vault.ownerAction(OwnerMessages.REPLACE_AGENT, thief, walletCred(wallet), d, _actionSig(address(vault), OwnerMessages.REPLACE_AGENT, thief, 0, d));
-        address b = vault.burner();
+        address b = address(1); // the BURNER sentinel
         vault.ownerAction(OwnerMessages.REPLACE_AGENT, b, walletCred(wallet), d, _actionSig(address(vault), OwnerMessages.REPLACE_AGENT, b, 1, d));
-        assertEq(vault.agent(), b);
+        assertTrue(vault.burning());
         assertEq(vault.ownerAgent(), address(0), "dropped with the burner");
     }
 

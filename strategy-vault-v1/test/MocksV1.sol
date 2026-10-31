@@ -190,8 +190,8 @@ contract AaveV3AssetLegV2 is AaveV3AssetLeg {
 }
 
 contract HyperCoreLegV2 is HyperCoreLeg {
-    constructor(address e, bytes32 eh, address b, bytes32 bh, address u, bytes32 uh, address r)
-        HyperCoreLeg(e, eh, b, bh, u, uh)
+    constructor(address e, bytes32 eh, address b, bytes32 bh, address o, bytes32 oh, address u, bytes32 uh, address r)
+        HyperCoreLeg(e, eh, b, bh, o, oh, u, uh)
     {
         listingRegistry = r;
     }

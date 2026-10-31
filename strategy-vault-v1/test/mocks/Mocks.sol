@@ -283,6 +283,25 @@ contract MockCoreWriter {
         feePaid[u] = p;
     }
 
+    /// The last action-1 (limit order) entry, decoded.
+    function lastOrder()
+        external
+        view
+        returns (uint32 asset, bool isBuy, uint64 px, uint64 sz, bool reduceOnly, uint8 tif, uint128 cloid)
+    {
+        for (uint256 i = _actions.length; i > 0; --i) {
+            bytes memory d = _actions[i - 1].data;
+            if (d.length >= 4 && uint24(bytes3(bytes4(d) << 8)) == 1) {
+                bytes memory body = new bytes(d.length - 4);
+                for (uint256 j = 0; j < body.length; ++j) {
+                    body[j] = d[j + 4];
+                }
+                return abi.decode(body, (uint32, bool, uint64, uint64, bool, uint8, uint128));
+            }
+        }
+        revert("no order");
+    }
+
     function sendRawAction(bytes calldata data) external {
         _actions.push(Action(msg.sender, data));
         emit RawAction(msg.sender, data);
@@ -386,6 +405,21 @@ contract CoreState {
     mapping(address => bool) public exists;
     mapping(uint32 => string) public coinOf; // a perp's `coin` ("X" unless set)
 
+    mapping(uint32 => uint8) public maxLeverageOf; // a perp's max leverage (25 unless set)
+    uint64 public l1Block;
+
+    function setMaxLeverage(uint32 p, uint8 maxLev) external {
+        maxLeverageOf[p] = maxLev;
+    }
+
+    function setL1Block(uint64 n) external {
+        l1Block = n;
+    }
+
+    function setIsolated(address u, uint16 p, bool iso) external {
+        positions[u][p].isIsolated = iso;
+    }
+
     function setCoin(uint32 p, string calldata coin) external {
         coinOf[p] = coin;
     }
@@ -457,11 +491,12 @@ contract CoreState {
         if (id == 0x803) return (true, abi.encode(withdrawableOf[abi.decode(input, (address))]));
         if (id == 0x806) return (true, abi.encode(mark[abi.decode(input, (uint32))]));
         if (id == 0x807) return (true, abi.encode(oracle[abi.decode(input, (uint32))]));
+        if (id == 0x809) return (true, abi.encode(l1Block));
         if (id == 0x80a) {
             uint32 p = abi.decode(input, (uint32));
             if (p >= 100_000) return (false, "");
             string memory coin = bytes(coinOf[p]).length == 0 ? "X" : coinOf[p];
-            return (true, abi.encode(PerpAssetInfo(coin, 0, szDecimals[p], 25, false)));
+            return (true, abi.encode(PerpAssetInfo(coin, 0, szDecimals[p], maxLeverageOf[p] == 0 ? 25 : maxLeverageOf[p], false)));
         }
         if (id == 0x80b) {
             uint32 s = abi.decode(input, (uint32));

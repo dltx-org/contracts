@@ -110,8 +110,8 @@ interface IOwnerRemovalsV1 {
 /*
  * The seam with VERSION 1 of the strategy vaults (asset-profiles-design.md §10 slice 1, owner-upgrades-design.md
  * §8): the deposit account built here as the owner of version 1's members, loaded from their pinned build
- * (test/fixtures/strategy-vault-v1-pinned: `forge inspect <C> bytecode` in contracts/strategy-vault on
- * feat/vault-asset-profiles-contracts, each checked against contracts/strategy-vault-v1/test/PinnedV1.t.sol's hash). On the
+ * (test/fixtures/strategy-vault-v1-pinned: `forge inspect <C> bytecode` in contracts/strategy-vault-v1 (built on
+ * feat/vault-asset-profiles-contracts), each checked against contracts/strategy-vault-v1/test/PinnedV1.t.sol's hash). On the
  * Arbitrum fork: the registry lists version 1 and opens the ETH profile in its constructor (the genesis,
  * checked against the chain), a wallet owner and a passkey owner each sign the typed `CreateVault` of version 1
  * (the factory's digest checked against an independent EIP-712 hash under the account's domain), the
@@ -136,14 +136,14 @@ contract SeamV1Test is Helpers {
     bytes32 constant STRATEGY = keccak256("seam-v1");
     bytes32 constant READY = keccak256("dltx.strategy-vault.ready.v1");
     // version 1's pinned build (contracts/strategy-vault-v1/test/PinnedV1.t.sol's creation-code hashes)
-    bytes32 constant V1_REGISTRY_CODE = 0x1ad116492b0f0e5d2441041301a49549c52c44ab7eb22392899d86a2d05a64e1;
-    bytes32 constant V1_UPGRADE_CODE = 0x6ac7ab0be95c9882db27fa50b5fbc2509041bb6eab69210f5994faa9a9cb9332;
-    bytes32 constant V1_HUB_FEE_CODE = 0x8ad730eca56b593a0cbe363a57b3bf2e4c71202b824d284835edbb0a33a2ac1a;
-    bytes32 constant V1_HUB_CODE = 0xe79b2bc5e5481afe61e7e961a82e81242b2935ee760fbc68ac97bfc34c451139;
-    bytes32 constant V1_LONG_EXIT_CODE = 0x44b24679ef50e7f2d795d9c14a00ab12ab7808ed74bc66530191d4d3c5259329;
-    bytes32 constant V1_LONG_REWARDS_CODE = 0x9bb731e9419ccf6b48a4206885ccceb4f0de17c855d4ab9a805ba701de83ec61;
-    bytes32 constant V1_LONG_CODE = 0xde6930a86b01b4b3140858999b587b2230004bb8aad4448eb994d55e6c960ffd;
-    bytes32 constant V1_FACTORY_CODE = 0x76909ca9564b3c0e7dab7eacc8883faf7199048d1ab6093cb0cb058f1f049ff6;
+    bytes32 constant V1_REGISTRY_CODE = 0xe48b2616616ece99d5808a0449d05070c05f105181a6803025767a8381674982;
+    bytes32 constant V1_UPGRADE_CODE = 0xfed82dcb610541112276c8aa95c704d3c89e4b15665673ef98a77668ced13384;
+    bytes32 constant V1_HUB_FEE_CODE = 0x168a8e159e1bdc84213f888fbfcbf0e8c3d5c269f9dc96e5ba3696d349fcd91b;
+    bytes32 constant V1_HUB_CODE = 0xfd7fa471f2687c6224d2223d70d46c9b0bb3c527947891a1c234f984f090822e;
+    bytes32 constant V1_LONG_EXIT_CODE = 0xf8ea056a6c89e65e3d0140524f8b0ef01c6a413909ad7d1384775830d03addf1;
+    bytes32 constant V1_LONG_REWARDS_CODE = 0x668bf2684481b0ec3f9ecfc8d4265961c08105e0cf44db90a40b770a223fd065;
+    bytes32 constant V1_LONG_CODE = 0x4e1cb9cf59e565d945d3dcc5855ed58cd44c5fc717e1fe97043d06afd1d07381;
+    bytes32 constant V1_FACTORY_CODE = 0xbe8b2ce88fa238704d044b7ec8e9edd8111f2d32dd495627199edbd26c12c3b9;
 
     string constant HUB_T =
         "StrategyHub(bytes32 profile,uint16 fastFeeCapBp,uint16 feeBudgetBp,uint16 feeRateBp,uint16 managementFeeBp,uint32 flatFeePerMonth)";

@@ -2,8 +2,10 @@
 pragma solidity 0.8.37;
 
 import {HyperCoreLegState} from "./HyperCoreLegState.sol";
+import {IDepositOwner} from "./interfaces/IDepositOwner.sol";
 import {IERC20} from "./interfaces/Protocols.sol";
 import {HyperCore} from "./lib/HyperCore.sol";
+import {Routes} from "./Types.sol";
 
 /*
  * The Hyperliquid leg's EXIT MODULE, part A (version 0's `ShortVaultExit`, split for EIP-170:
@@ -22,15 +24,17 @@ contract HyperCoreLegExit is HyperCoreLegState {
 
     /// Anyone, in exit. Reads, then sends what the state still calls for.
     function exitStep(ExitArgs calldata a) external delegated nonReentrant inExit counted {
-        // the exit's agent again: the same agent under the same name twice is harmless
-        if (_due(K_AGENT, 0, 0)) HyperCore.addApiWallet(exitAgent, AGENT_NAME);
+        // the exit's agent again: the owner's own under the same name (twice is harmless), or a fresh
+        // burner under it, which replaces the last (finding 1: a refused approval is silent, so each
+        // retry names an address no one could have claimed)
+        if (_due(K_AGENT, 0, 0)) _useAgent(burning ? BURNER : exitAgent);
         for (uint256 i; i < a.cancels.length; ++i) {
             _cancel(a.cancels[i]);
         }
         for (uint256 i; i < a.dexes.length; ++i) {
             _watch(a.dexes[i].dex, false);
         }
-        // DEX 0 closes: sized by the position precompile, bounded by the validator oracle
+        // DEX 0 closes: sized by the position precompile, bounded by both prices and each perp's ceiling
         bool closing = _closeDex0(perp);
         for (uint256 i; i < a.perps.length; ++i) {
             if (_closeDex0(a.perps[i])) closing = true;
@@ -44,6 +48,47 @@ contract HyperCoreLegExit is HyperCoreLegState {
 
     /// Anyone, in exit: the leg's HyperEVM USDC to its hub, with no HyperCore read, so it goes even
     /// when a precompile read fails.
+    /// CoreWriter 9 under the fixed name: the new agent replaces the old one (§5). Here for the leg's size.
+    function applyAgent() external delegated onlyExecution nonReentrant {
+        if (route == Routes.CONTRACT) revert NotAllowed(); // DLTX names no agent there (spec §4.6)
+        address next = pendingAgent;
+        if (next == address(0)) revert NoAgent();
+        if (agentEverSet && block.timestamp < uint256(pendingAgentAt) + AGENT_DELAY) revert TooEarly();
+        if (!HyperCore.coreUserExists(address(this))) revert NoCoreAccount();
+        pendingAgent = address(0);
+        _useAgent(next);
+    }
+
+    /// Anyone, once the owner's choice has stood 24 hours and while the credential that chose it is still
+    /// one in this chain's record (M2); in or out of the exit (here for the leg's size). On the contract
+    /// route it is the owner's switch back: the agent route, any quarantine ended (spec §4.6).
+    function applyOwnerAgent() external delegated nonReentrant {
+        address next = ownerAgent;
+        if (next == address(0)) revert NoAgent();
+        if (block.timestamp < uint256(ownerAgentAt) + AGENT_DELAY) revert TooEarly();
+        if (!IDepositOwner(owner).isCredentialId(ownerAgentBy)) revert NotAllowed();
+        ownerAgent = address(0);
+        _useAgent(next);
+        quarantine = false;
+        if (route != Routes.AGENT) {
+            route = Routes.AGENT;
+            emit RouteChanged(Routes.AGENT);
+        }
+    }
+
+    /// What `END_QUARANTINE` re-checks of the account (spec §4.6 (c)), as the leg reads it: the
+    /// strategy's perp not isolated, and DEX 0's notional the perp's within one size step (`|szi| × mark`
+    /// in USD × 1e6, one step's notional the mark), so no other DEX 0 position. The leg can't read
+    /// Hyperliquid's mode, agents, TWAPs or HIP-3 positions: those are the owner's own check.
+    function readsClean() external view delegated returns (bool) {
+        HyperCore.Position memory pos = HyperCore.position(address(this), perp);
+        (bool ok, HyperCore.MarginSummary memory m) = HyperCore.marginSummary(0, address(this));
+        uint256 mark = HyperCore.markPx(perp);
+        uint256 own = uint256(uint64(pos.szi < 0 ? -pos.szi : pos.szi)) * mark;
+        uint256 ntl = m.ntlPos;
+        return ok && !pos.isIsolated && (ntl > own ? ntl - own : own - ntl) <= mark;
+    }
+
     function bridgeOut() external delegated nonReentrant inExit {
         _sendAllToHub();
     }
@@ -59,10 +104,13 @@ contract HyperCoreLegExit is HyperCoreLegState {
         (bool ok, HyperCore.Position memory pos) = HyperCore.tryPosition(address(this), p);
         if (!ok || pos.szi == 0) return false;
         if (!_due(K_CLOSE, p, 0)) return true;
-        uint8 szd = HyperCore.perpSzDecimals(p);
         bool isBuy = pos.szi < 0;
+        // banded from the stricter of the perp's oracle and mark, at most its own maintenance ceiling (spec
+        // §6); a perp that can't be priced now is not closed, and stays open: the gate holds (CR-X1)
+        (uint64 limit, uint8 szd) = _perpLimit(p, isBuy);
+        if (limit == 0) return true;
         uint256 size = uint256(uint64(isBuy ? -pos.szi : pos.szi)) * 10 ** (8 - szd);
-        HyperCore.orderIoc(p, isBuy, _perpLimit(p, szd, isBuy), uint64(size), true);
+        HyperCore.orderIoc(p, isBuy, limit, uint64(size), true, 0);
         return true;
     }
 
@@ -93,7 +141,7 @@ contract HyperCoreLegExit is HyperCoreLegState {
         // stranger's) still only goes to the hub, the owner's. A send that never executes stays reserved
         // until the owner's signed RELEASE_RESERVATION.
         uint256 arrived = sentTo[0] + IERC20(USDC).balanceOf(address(this));
-        uint256 minted = receivedFromOthers;
+        uint256 minted = othersPending; // a stranger's mint forwarded to the hub left by no counted send
         for (uint256 k; k < 4; ++k) {
             minted += receivedFrom[k] - feesFrom[k]; // net, as they arrived
         }
@@ -112,13 +160,13 @@ contract HyperCoreLegExit is HyperCoreLegState {
             if (reserved != 0 && (arrived + mintedMark) * 100 >= (arrivedMark + minted) * 100 + reserved) reserved = 0;
             room = floorSet && s.spotUsdc > floor + reserved ? uint64(s.spotUsdc - floor - reserved) : 0;
         }
-        uint64 spotFee = HYPE_FEE_RESERVE;
+        uint64 spotFee = _hypeReserve();
         // HYPE from zero: the fewest 0.01 steps worth Hyperliquid's $10 order minimum at the HYPE perp's
         // oracle + the bound (`_purchase`), at most 3 purchases
         if (s.spotHype < spotFee && purchases < MAX_PURCHASES) {
             (uint64 limit, uint64 steps, uint64 cost) = _purchase(s.hypePx);
             if (steps > 0 && cost <= s.spotUsdc && cost <= room && _due(K_BUY, 0, 0)) {
-                HyperCore.orderIoc(SPOT_ASSET_OFFSET + 107, true, limit, steps * STEP_WEI, false);
+                HyperCore.orderIoc(SPOT_ASSET_OFFSET + 107, true, limit, steps * STEP_WEI, false, 0);
                 purchases++;
                 room -= cost;
             }
@@ -158,7 +206,7 @@ contract HyperCoreLegExit is HyperCoreLegState {
             uint64 limit = HyperCore.boundedPx(i == 0 ? s.hypePx : 1e8, orderBoundBp, false, 6);
             uint64 steps = sellable / STEP_WEI;
             if (uint256(steps) * limit / 100 >= SALE_MIN_USDC && _due(K_SELL, token, 0)) {
-                HyperCore.orderIoc(SPOT_ASSET_OFFSET + spot, false, limit, steps * STEP_WEI, false);
+                HyperCore.orderIoc(SPOT_ASSET_OFFSET + spot, false, limit, steps * STEP_WEI, false, 0);
             }
         }
     }

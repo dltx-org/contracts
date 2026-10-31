@@ -25,7 +25,7 @@ contract FundingTest is Helpers {
     bytes32 constant STRATEGY = keccak256("strategy A");
     bytes32 constant CONFIG = keccak256("strategy A's configuration");
     /// DepositAccount's PINNED_VAULT_FACTORY (deposit-first-deposit-design.md, D2).
-    address constant PINNED = 0xF6989dDcf67CcbC1077C9054D62F8A1363623d1d;
+    address constant PINNED = 0x05C8c664b5484ed764f8C53e72c182fE071ceAA9;
 
     DepositFactory f;
     DepositAccount a;

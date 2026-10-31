@@ -20,6 +20,11 @@ interface IReceiverPins {
     function ROUTER() external view returns (address);
 }
 
+/// AAVE's oracle's source of an asset (a Chainlink feed for the assets a profile may carry).
+interface IAaveSources {
+    function getSourceOfAsset(address asset) external view returns (address);
+}
+
 /*
  * The AAVE V3 ASSET LEG's STORAGE, constants and shared internals (asset-profiles-design.md §3.2; version
  * 0's `LongVaultState` made generic): inherited by the leg (`AaveV3AssetLeg is MemberBase,
@@ -70,6 +75,11 @@ abstract contract AaveV3AssetLegState is MemberState {
     /// or a compromised feed's, stalls the exit instead of selling into it: R6).
     uint256 internal constant MAX_RATE_DISCOUNT_BP = 1_000;
 
+    /// The audit of 2026-10-26, finding 3: the most seconds since the asset's AAVE source last answered
+    /// before a sale's bound may be computed from it: a Chainlink asset / USD feed's 24-hour heartbeat +
+    /// 1 hour, as the profiles' rate feeds (compiled, not a profile field: a feed with a longer heartbeat
+    /// is refused at the profile's acceptance, which reads it live)
+    uint256 internal constant PRICE_MAX_AGE = 25 hours;
     uint64 internal constant MIN_HEALTH_FLOOR = 1.05e18;
     uint64 internal constant MAX_HEALTH_FLOOR = 3e18;
     uint16 internal constant MAX_ORACLE_BOUND_BP = 500;
@@ -107,6 +117,7 @@ abstract contract AaveV3AssetLegState is MemberState {
     event RewardClaimed(uint8 source, uint256 gained);
     event RewardSwapped(uint256 rewardIn, uint256 usdcOut, uint256 lossUsd);
     event ProfileFollowed(bytes32 indexed fromProfile, bytes32 indexed toProfile);
+    event HealthFloorSet(uint64 healthFloor);
 
     error BadAsset();
     error BelowHealthFloor();
@@ -147,7 +158,7 @@ abstract contract AaveV3AssetLegState is MemberState {
         h = new Holding[](2);
         uint256 held = IERC20(_aAsset).balanceOf(address(this)) + IERC20(_asset).balanceOf(address(this));
         h[0] = Holding(_holdingAsset, int256(held * 10 ** (18 - uint256(_decimals))));
-        int256 usd = int256(IERC20(USDC).balanceOf(address(this)) + IERC20(A_USDC).balanceOf(address(this)))
+        int256 usd = int256(_ownUsdc(USDC) + IERC20(A_USDC).balanceOf(address(this)))
             - int256(IERC20(VDEBT_USDC).balanceOf(address(this)));
         h[1] = Holding(Assets.USD, usd * 1e12);
         extra = 0;
@@ -197,8 +208,16 @@ abstract contract AaveV3AssetLegState is MemberState {
         return aave * (rate < least ? least : rate) / 1e18;
     }
 
-    /// The asset's AAVE price, its reference, and USDC's (AAVE's base, 8 decimals).
+    /// The asset's AAVE price, its reference, and USDC's (AAVE's base, 8 decimals): every bound on a sale
+    /// reads them here, so none is computed from a stale price (the audit of 2026-10-26, finding 3): the
+    /// asset's AAVE source answered within `PRICE_MAX_AGE` and the sequencer is up past its grace, else
+    /// `StalePrice` (the key's sale is refused, an exit part waits). USDC's source is AAVE's capped
+    /// adapter, which has no rounds, its price held near 1. The health checks and the loss counter keep
+    /// AAVE's price alone.
     function _prices() internal view returns (uint256 pa, uint256 pr, uint256 pu) {
+        (bool ok,,) = PriceSource.latestAt(IAaveSources(ORACLE).getSourceOfAsset(_asset), block.timestamp, PRICE_MAX_AGE);
+        if (ok) (ok,) = PriceSource.sequencerUp(SEQUENCER, block.timestamp);
+        if (!ok) revert StalePrice();
         pa = _price(_asset);
         pr = _reference(pa);
         pu = _price(USDC);
@@ -287,7 +306,11 @@ abstract contract AaveV3AssetLegState is MemberState {
         IERC20(_aAsset).approve(RECEIVER, 0);
 
         uint256[4] memory afterwards = _snapshot();
-        uint256 collateralOut = (before[0] - afterwards[0]) - (afterwards[2] - before[2]);
+        // the collateral that left, aToken and idle asset together, never below zero: what anyone parks on
+        // the receiver comes back here as a gift, read as nothing out (the audit of 2026-10-26, finding 2)
+        uint256 collateralOut = before[0] + before[2] > afterwards[0] + afterwards[2]
+            ? before[0] + before[2] - afterwards[0] - afterwards[2]
+            : 0;
         uint256 debtIn = (before[1] - afterwards[1]) + (afterwards[3] - before[3]);
         (uint256 pa, uint256 pr, uint256 pu) = _prices();
         uint256 unit = _unit();

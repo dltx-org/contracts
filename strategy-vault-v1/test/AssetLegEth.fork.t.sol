@@ -10,6 +10,7 @@ import {HubState} from "../src/HubState.sol";
 import {MemberBase} from "../src/MemberBase.sol";
 import {MemberState} from "../src/MemberState.sol";
 import {AaveV3AssetLegState} from "../src/AaveV3AssetLegState.sol";
+import {LiveFeed} from "./ArbitrumForkV1.sol";
 import {AaveV3AssetLegExit} from "../src/AaveV3AssetLegExit.sol";
 import {StrategySpec} from "../src/Types.sol";
 import {Arbitrum} from "../src/lib/Pinned.sol";
@@ -61,6 +62,10 @@ interface IUniPool {
 
 interface IChainlinkFeed {
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80);
+}
+
+interface IAaveSourcesx {
+    function getSourceOfAsset(address asset) external view returns (address);
 }
 
 interface IOracle {
@@ -169,6 +174,10 @@ interface IReceiver {
  * such: ETH on version 1 is this same code with the ETH profile. SKIPPED when ARBITRUM_RPC_URL is not set.
  */
 contract AssetLegEthForkTest is ArbitrumForkV1 {
+    /// `_swapping`'s slot in the AAVE leg (layouts/AaveV3AssetLeg.txt: after `MemberState`'s prefix, its
+    /// `othersPending` and `__gap` included)
+    uint256 constant SWAPPING_SLOT = 75;
+
     uint256 constant PINNED_BLOCK = 514_790_000; // 2026-10-14, version 0's
     bytes32 constant STRATEGY = keccak256("strategy-1");
 
@@ -1453,7 +1462,7 @@ contract AssetLegEthForkTest is ArbitrumForkV1 {
         _arb(v, 10e18);
         deal(Arbitrum.WETH, v, 1e18);
         _usdc(v, 100e6);
-        vm.store(v, bytes32(uint256(34)), bytes32(uint256(2)));
+        vm.store(v, bytes32(uint256(SWAPPING_SLOT)), bytes32(uint256(2)));
         vm.prank(Arbitrum.SWAP_POOL);
         vm.expectRevert(MemberState.NotAllowed.selector);
         vault.uniswapV3SwapCallback(1e18, 1e6, "");
@@ -1463,7 +1472,7 @@ contract AssetLegEthForkTest is ArbitrumForkV1 {
         assertEq(IERC20x(ARB).balanceOf(v), 9e18, "ARB paid");
         assertEq(usdc.balanceOf(v), usdc0, "never USDC");
         assertEq(weth.balanceOf(v), 1e18, "never WETH");
-        vm.store(v, bytes32(uint256(34)), bytes32(uint256(1)));
+        vm.store(v, bytes32(uint256(SWAPPING_SLOT)), bytes32(uint256(1)));
         vm.prank(Arbitrum.REWARD_POOL);
         vm.expectRevert(MemberState.NotAllowed.selector);
         vault.uniswapV3SwapCallback(1e18, 0, "");
@@ -1472,7 +1481,7 @@ contract AssetLegEthForkTest is ArbitrumForkV1 {
         assertEq(weth.balanceOf(v), 0.9e18);
         assertEq(usdc.balanceOf(v), usdc0 - 1e6);
         assertEq(IERC20x(ARB).balanceOf(v), 9e18, "never ARB");
-        vm.store(v, bytes32(uint256(34)), bytes32(0));
+        vm.store(v, bytes32(uint256(SWAPPING_SLOT)), bytes32(0));
     }
 
     /// The probe isolated (Codex's code review): ARB answering an absurd balance beside aArbARB, or AAVE's
@@ -1651,5 +1660,81 @@ contract AssetLegEthForkTest is ArbitrumForkV1 {
     function _slice(bytes memory b, uint256 from, uint256 n) internal pure returns (bytes memory out) {
         out = new bytes(n);
         for (uint256 i; i < n; ++i) out[i] = b[from + i];
+    }
+
+    // ── the external audit of 2026-10-26 (research/audit-2026-10-26.md) ─────────────────────────────
+
+    function _maxColl(uint256 debt) internal view returns (uint256) {
+        return debt * IOracle(Arbitrum.ORACLE).getAssetPrice(Arbitrum.USDC) * 1e12 * 10_100
+            / (IOracle(Arbitrum.ORACLE).getAssetPrice(Arbitrum.WETH) * 10_000);
+    }
+
+    /// Finding 2, the leg's side: aWETH parked on the deployed receiver (it withdraws its whole balance
+    /// and supplies the rest back to the caller) comes back as a gift, more than the sale took: read as
+    /// nothing out, where it reverted (`Panic 0x11`).
+    function test_fork_audit_F2_aTokensParkedOnTheReceiverAreAGift() public onFork {
+        address v = address(vault);
+        _lever(vault);
+        deal(Arbitrum.WETH, stranger, 1e18);
+        vm.startPrank(stranger);
+        IERC20x(Arbitrum.WETH).approve(Arbitrum.POOL, 1e18);
+        IPoolx(Arbitrum.POOL).supply(Arbitrum.WETH, 1e18, Arbitrum.RECEIVER, 0);
+        vm.stopPrank();
+        uint256 debt0 = IERC20x(Arbitrum.VDEBT_USDC).balanceOf(v);
+        uint256 coll0 = IERC20x(Arbitrum.A_WETH).balanceOf(v);
+        uint256 maxColl = _maxColl(1_000e6);
+        vm.prank(key);
+        vault.repayWithCollateral(1_000e6, maxColl);
+        assertApproxEqAbs(IERC20x(Arbitrum.VDEBT_USDC).balanceOf(v), debt0 - 1_000e6, 2);
+        assertGt(IERC20x(Arbitrum.A_WETH).balanceOf(v), coll0, "the parked aWETH reached the leg");
+    }
+
+    /// Finding 2: raw WETH parked on the receiver (returned to the caller as a stray) neither.
+    function test_fork_audit_F2_rawWethParkedOnTheReceiverIsAGift() public onFork {
+        _lever(vault);
+        deal(Arbitrum.WETH, Arbitrum.RECEIVER, 1e18);
+        uint256 maxColl = _maxColl(1_000e6);
+        vm.prank(key);
+        vault.repayWithCollateral(1_000e6, maxColl);
+        assertEq(IERC20x(Arbitrum.WETH).balanceOf(address(vault)), 1e18, "the stray came back as a gift");
+    }
+
+    /// Finding 3: every sale's bound reads AAVE's price only while its source answered within the
+    /// compiled `PRICE_MAX_AGE` (25 h) and the sequencer is up: the key's swap and repay are refused.
+    function test_fork_audit_F3_aStalePriceRefusesEverySale() public onFork {
+        _lever(vault);
+        address live = IAaveSourcesx(Arbitrum.ORACLE).getSourceOfAsset(Arbitrum.WETH);
+        vm.mockCall( // the check reads the real feed again, its round now 26 hours old
+            Arbitrum.ORACLE,
+            abi.encodeWithSignature("getSourceOfAsset(address)", Arbitrum.WETH),
+            abi.encode(LiveFeed(live).REAL())
+        );
+        (,,, uint256 updatedAt,) = IChainlinkFeed(LiveFeed(live).REAL()).latestRoundData();
+        vm.warp(updatedAt + 26 hours);
+        deal(Arbitrum.WETH, address(vault), 0.1e18);
+        uint256 maxColl = _maxColl(1_000e6);
+        vm.startPrank(key);
+        vm.expectRevert(AaveV3AssetLegState.StalePrice.selector);
+        vault.swap(true, 0.1e18, 0);
+        vm.expectRevert(AaveV3AssetLegState.StalePrice.selector);
+        vault.repayWithCollateral(1_000e6, maxColl);
+        vm.stopPrank();
+        vm.warp(updatedAt + 25 hours); // within the 25 hours: sold
+        vm.prank(key);
+        vault.swap(true, 0.1e18, 0);
+    }
+
+    /// Finding 3: Arbitrum's sequencer down (or within its hour of grace): the same refusal.
+    function test_fork_audit_F3_theSequencerDownRefusesEverySale() public onFork {
+        _lever(vault);
+        vm.mockCall(
+            Arbitrum.SEQUENCER,
+            abi.encodeWithSignature("latestRoundData()"),
+            abi.encode(uint80(1), int256(1), block.timestamp - 10 minutes, block.timestamp - 10 minutes, uint80(1))
+        );
+        deal(Arbitrum.WETH, address(vault), 0.1e18);
+        vm.prank(key);
+        vm.expectRevert(AaveV3AssetLegState.StalePrice.selector);
+        vault.swap(true, 0.1e18, 0);
     }
 }

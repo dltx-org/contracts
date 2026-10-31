@@ -358,7 +358,7 @@
           "checks": [
             "Every field is signed: token, amount, destination, maximum fee, fee recipient.",
             "The signed destination must still be the withdrawal address in effect, and the signed fee recipient the deposit factory's in effect: a signature played after either changed reverts.",
-            "For USDC and the pinned USDT the owner always signs a maximum fee of at least the 1 USD flat fee (`FeeAboveMax` otherwise, whether or not a fee turns out due); with a fee recipient set the amount must be above it (`AmountNotAboveFee`) unless it is the whole balance, which then leaves free. If the fee's transfer fails, the withdrawal goes ahead whole. Other tokens and the native coin pay none."
+            "For USDC and the pinned USDT the owner always signs a maximum fee of at least the 1 USD flat fee (`FeeAboveMax` otherwise, whether or not a fee turns out due); with a fee recipient set the amount must be above it (`AmountNotAboveFee`) unless the whole balance is at most the fee, which then leaves free (dust arriving after the signature cannot block it). If the fee's transfer fails, the withdrawal goes ahead whole. Other tokens and the native coin pay none."
           ],
           "params": {
             "w": "The withdrawal the owner signed (see `Withdrawal`)."
@@ -368,7 +368,7 @@
           "caller": "transfer-key",
           "does": "Pays this chain's USDC to a strategy contract the owner authorised.",
           "who": "The transfer key only, unless the owner revoked it on this chain.",
-          "when": "Once a withdrawal address is in effect here, since a strategy's exit pays it.",
+          "when": "Once a withdrawal address is in effect here, since a strategy's exit pays it, and on a copy only while it is synced (its record sent by the home within the last 30 days).",
           "checks": [
             "The factory is trusted by this account for this chain.",
             "The strategy contract exists (deployed before funded, its whole configuration validated by its factory) and the factory confirms it belongs to THIS account (`authorisedFor`).",
@@ -453,16 +453,19 @@
           "does": "How long after the home published it a copy still follows an upgrade message: 3 days. An older one is ignored, and the home's current version is published again."
         },
         "SCHEDULE_UPGRADE_TYPEHASH": {
-          "does": "The EIP-712 type hash of `ScheduleUpgrade(address implementation,uint256 nonce,uint256 deadline)`, a record change."
+          "does": "The EIP-712 type hash of `ScheduleUpgrade(address implementation,uint256 codeVersion,bytes32 codeHash,uint256 nonce,uint256 deadline)`, a record change: the owner signs the version and the code hash, not only an address."
         },
         "CANCEL_UPGRADE_TYPEHASH": {
           "does": "The EIP-712 type hash of `CancelUpgrade(address implementation,uint256 due,uint256 deadline)`, a cancellation (no nonce)."
         },
         "UPGRADE_TAG": {
-          "does": "The tag of the home's upgrade message to a copy, `keccak256(\"dltx.owner-upgrade.v1\")`; its format (tag, implementation, publishedAt) is frozen for every version."
+          "does": "The tag of the home's upgrade message to a copy, `keccak256(\"dltx.owner-upgrade.v1\")`; its format (tag, implementation, its code hash, publishedAt) is frozen for every version."
         },
         "module": {
           "does": "This version's record module: the contract whose functions (the record changes, the copies, the upgrade) this account runs in its own storage. Created before this code, its code hash checked by the constructor; never changeable."
+        },
+        "moduleCodeHash": {
+          "does": "The code hash of the record module this code was built for, checked by its constructor; the factory's listing checks the module still has it."
         },
         "implementation": {
           "does": "The code this account runs now (the ERC-1967 slot): the factory's genesis at deployment, then each version its owner moved it to."
@@ -491,15 +494,18 @@
         },
         "scheduleUpgrade": {
           "caller": "owner",
-          "does": "Schedules the account's move to a later listed version of its code, applied by anyone 24 hours later unless a credential cancels it first. One upgrade is pending at most and is never replaced: to change the target, cancel, then sign again.",
+          "does": "Schedules the account's move to a later listed version of its code, applied by anyone 24 hours later unless a credential cancels it first. The owner signs the version and the code hash, not only the address. One upgrade is pending at most and is never replaced: to change the target, cancel, then sign again.",
           "who": "The owner: a record change signed by a credential in effect, with that credential's own record nonce; never DLTX, the transfer key or the recovery key.",
           "when": "At the home only, before the signature's deadline, while no upgrade is pending.",
           "checks": [
             "The factory lists `impl` with a version above this one: forward only.",
+            "The signed `codeVersion` is that listed version, and the signed `codeHash` both the hash the factory accepted `impl` with (`codeHashOf`) and the hash of the code at `impl` now.",
             "The signing credential has no removal pending."
           ],
           "params": {
-            "impl": "The listed implementation to move to."
+            "impl": "The listed implementation to move to.",
+            "codeVersion": "Its version in the factory's list (`versionOf`).",
+            "codeHash": "Its code hash as the factory accepted it (`codeHashOf`)."
           }
         },
         "cancelUpgrade": {
@@ -513,13 +519,13 @@
         },
         "applyUpgrade": {
           "caller": "anyone",
-          "does": "Applies the pending upgrade: first every change already due lands under the current code, then the account's code moves to the target (`Upgraded`). If the credential that scheduled it is no longer in effect or has a removal pending, the upgrade is cleared instead (`UpgradeCancelled`).",
+          "does": "Applies the pending upgrade: first every change already due lands under the current code, then the account's code moves to the target (`Upgraded`). If the credential that scheduled it is no longer in effect or has a removal pending, or the code at the target no longer has the hash the factory accepted, the upgrade is cleared instead (`UpgradeCancelled`).",
           "who": "Anyone; DLTX applies it once due and pays the gas.",
           "when": "At the home only, once the upgrade is due, never during one of the account's own money calls."
         },
         "publishUpgrade": {
           "caller": "anyone",
-          "does": "Sends the code this account runs now to this same address on another deposit chain, through Circle's message transmitter (no burn, no fee, finalized): the copy there follows it if its own factory lists that version and it is higher.",
+          "does": "Sends the code this account runs now (its address and code hash) to this same address on another deposit chain, through Circle's message transmitter (no burn, no fee, finalized): the copy there follows it if its own factory lists that address with that same code hash, the code there has it, and the version is higher.",
           "who": "Anyone.",
           "when": "At the home only, as often as needed.",
           "params": {
@@ -903,6 +909,12 @@
             "implementation": "The proposed implementation."
           }
         },
+        "codeHashOf": {
+          "does": "The code hash a listed implementation was accepted with (the genesis's at construction), kept for good, zero for an unlisted address. An account schedules, applies and follows an upgrade only while the code at that address still has it.",
+          "params": {
+            "implementation": "The implementation's address."
+          }
+        },
         "versions": {
           "does": "The highest listed version."
         },
@@ -921,8 +933,9 @@
           "who": "The recovery key only.",
           "when": "Any time.",
           "checks": [
-            "The implementation has code, is not listed and not already proposed.",
-            "It names this factory as its own, or a later factory descending from it (each naming the one before as its predecessor, at most `MAX_SUCCESSIONS` steps), and so does its module.",
+            "The implementation has code, is no EIP-7702 delegation, is not listed and not already proposed.",
+            "It names this factory as its own, or a later factory descending from it (each naming the one before as its predecessor, at most `MAX_SUCCESSIONS` steps), and so does its module. A later factory must answer every call an account makes of its factory (`transferKey`, `feeRecipient`, `stopped`, `versionOf`, `codeHashOf`), or an account moved to the version could never exit.",
+            "Its module has code, is no EIP-7702 delegation, and has the code hash the implementation pins (`moduleCodeHash`).",
             "Its `CODE_VERSION` is above every listed version, and its module's is the same (the account's forward-only check reads the module's)."
           ],
           "params": {
@@ -944,7 +957,7 @@
           "who": "The recovery key only.",
           "when": "At or after the proposal's due time, in version order.",
           "checks": [
-            "Its code hash is the one proposed.",
+            "Its code hash is the one proposed, kept as `codeHashOf`; its module still has the hash the implementation pins.",
             "Its `CODE_VERSION` is the next number."
           ],
           "params": {

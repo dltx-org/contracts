@@ -52,7 +52,7 @@ contract PoolUser {
 
 /*
  * Fork tests against the real chains (spec §13). Each runs when its RPC url is set (test.mjs reads
- * them from apps/api-v1/.env; HyperEVM's and Avalanche's default to their public RPCs) and is skipped
+ * them from apps/ledger/.env; HyperEVM's and Avalanche's default to their public RPCs) and is skipped
  * otherwise:
  *   - Arbitrum: the canonical deterministic deployer, the P-256 precompile present (gas measured),
  *     Circle's real MessageTransmitterV2 sending a deposit account's record, the USDT0 → USDC swap
@@ -207,8 +207,9 @@ contract ForkTest is Helpers {
         assertEq(bytes32(slice(message, 76, 108)), self, "recipient");
         assertEq(uint32(bytes4(slice(message, 140, 144))), 2000, "finalized");
         bytes memory body = slice(message, 148, message.length);
-        (, address named, uint64 publishedAt) = abi.decode(body, (bytes32, address, uint64));
+        (, address named, bytes32 codeHash, uint64 publishedAt) = abi.decode(body, (bytes32, address, bytes32, uint64));
         assertEq(named, v2);
+        assertEq(codeHash, v2.codehash, "the code the owner signed (the audit of 2026-10-26, finding 4)");
 
         if (!fork("HYPEREVM_RPC_URL")) return;
         DepositFactory hf = deployReal();

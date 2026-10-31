@@ -8,8 +8,9 @@ import {DepositFactory} from "../src/DepositFactory.sol";
 import {DepositAccountRecordV2, DepositAccountV2} from "./fixtures/DepositAccountV2.sol";
 import {FixtureVaultFactory, Helpers, MockToken, MockTokenMessenger, MockTransmitter} from "./Helpers.sol";
 
-/// A factory that continues `predecessor` (§A9): all the listing asks of it.
-contract SuccessorFactory {
+/// A factory that answers only `predecessor()` (§A9): the listing refuses a version naming it, since an
+/// account on that version calls its factory for every exit (the external audit's low on successors).
+contract PredecessorOnly {
     address public predecessor;
 
     constructor(address p) {
@@ -18,6 +19,21 @@ contract SuccessorFactory {
 
     function setPredecessor(address p) external {
         predecessor = p;
+    }
+}
+
+/// A factory that continues `predecessor` (§A9) and answers every call an account makes of its
+/// factory: all the listing asks of it.
+contract SuccessorFactory is PredecessorOnly {
+    address public transferKey;
+    address public feeRecipient;
+    mapping(address => uint256) public versionOf;
+    mapping(address => bytes32) public codeHashOf;
+
+    constructor(address p) PredecessorOnly(p) {}
+
+    function stopped(uint256) external pure returns (bool) {
+        return false;
     }
 }
 
@@ -414,32 +430,35 @@ contract UpgradeTest is Helpers {
         list(f, v2);
         uint256 deadline = vm.getBlockTimestamp() + 1 hours;
         uint256 nonce = a.recordNonceOf(credOf(WALLET_A));
-        bytes32 d = typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), v2, nonce, deadline));
+        (uint256 v2V, bytes32 v2H) = upgradeTerms(a, v2);
+        bytes32 d = scheduleDigest(a, v2, v2V, v2H, nonce, deadline);
         DepositAccountRecord r = rec(a);
         // a bad signature, a nonce, a deadline
         vm.expectRevert(DepositAccountState.BadSignature.selector);
-        r.scheduleUpgrade(v2, nonce, deadline, sign(WALLET_B, d));
-        bytes32 d1 = typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), v2, nonce + 1, deadline));
+        r.scheduleUpgrade(v2, v2V, v2H, nonce, deadline, sign(WALLET_B, d));
+        bytes32 d1 = scheduleDigest(a, v2, v2V, v2H, nonce + 1, deadline);
         vm.expectRevert(DepositAccountState.BadNonce.selector);
-        r.scheduleUpgrade(v2, nonce + 1, deadline, sign(WALLET_A, d1));
+        r.scheduleUpgrade(v2, v2V, v2H, nonce + 1, deadline, sign(WALLET_A, d1));
         vm.warp(deadline + 1);
         vm.expectRevert(DepositAccountState.Expired.selector);
-        r.scheduleUpgrade(v2, nonce, deadline, sign(WALLET_A, d));
-        // unlisted, and not higher (the genesis itself)
+        r.scheduleUpgrade(v2, v2V, v2H, nonce, deadline, sign(WALLET_A, d));
+        // unlisted (signed as its own code version), and not higher (the genesis itself)
         address v3 = newV3(f);
+        (uint256 v3V, bytes32 v3H) = (3, v3.codehash);
         deadline = vm.getBlockTimestamp() + 1 hours;
-        d = typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), v3, nonce, deadline));
+        d = scheduleDigest(a, v3, v3V, v3H, nonce, deadline);
         vm.expectRevert(DepositAccountState.BadImplementation.selector);
-        r.scheduleUpgrade(v3, nonce, deadline, sign(WALLET_A, d));
+        r.scheduleUpgrade(v3, v3V, v3H, nonce, deadline, sign(WALLET_A, d));
         address g = f.genesis();
-        d = typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), g, nonce, deadline));
+        (uint256 gV, bytes32 gH) = upgradeTerms(a, g);
+        d = scheduleDigest(a, g, gV, gH, nonce, deadline);
         vm.expectRevert(DepositAccountState.BadImplementation.selector);
-        r.scheduleUpgrade(g, nonce, deadline, sign(WALLET_A, d));
+        r.scheduleUpgrade(g, gV, gH, nonce, deadline, sign(WALLET_A, d));
         // not at the home
         vm.chainId(HYPEREVM);
-        d = typed(a, abi.encode(a.SCHEDULE_UPGRADE_TYPEHASH(), v2, nonce, deadline));
+        d = scheduleDigest(a, v2, v2V, v2H, nonce, deadline);
         vm.expectRevert(DepositAccountState.NotHome.selector);
-        r.scheduleUpgrade(v2, nonce, deadline, sign(WALLET_A, d));
+        r.scheduleUpgrade(v2, v2V, v2H, nonce, deadline, sign(WALLET_A, d));
     }
 
     /// Q13: one pending upgrade, never replaced. The owner cancels, then signs again.
@@ -451,7 +470,7 @@ contract UpgradeTest is Helpers {
         (uint256 nonce, uint256 deadline, bytes memory sig) = scheduleUpgradeSig(a, PASSKEY_A, v3);
         DepositAccountRecord r = rec(a);
         vm.expectRevert(DepositAccountState.AlreadyPending.selector);
-        r.scheduleUpgrade(v3, nonce, deadline, sig);
+        r.scheduleUpgrade(v3, 3, v3.codehash, nonce, deadline, sig);
         cancelUpgrade(a, PASSKEY_A, v2, due);
         assertEq(scheduleUpgrade(a, PASSKEY_A, v3), vm.getBlockTimestamp() + 24 hours);
         (address impl,,) = a.pendingUpgrade();
@@ -528,7 +547,7 @@ contract UpgradeTest is Helpers {
         (uint256 nonce, uint256 deadline, bytes memory sig) = scheduleUpgradeSig(a, WALLET_A, v2);
         DepositAccountRecord r = rec(a);
         vm.expectRevert(DepositAccountState.RemovalPending.selector);
-        r.scheduleUpgrade(v2, nonce, deadline, sig);
+        r.scheduleUpgrade(v2, 2, v2.codehash, nonce, deadline, sig);
         vm.revertToState(snap);
         due = scheduleUpgrade(a, WALLET_A, v2);
         proposeRemoval(a, PASSKEY_A, wallet(WALLET_A)); // lands at the same second as the upgrade's due
@@ -900,9 +919,9 @@ contract UpgradeTest is Helpers {
         vm.expectRevert(DepositAccountState.AlreadyInitialised.selector);
         g.initialize(one(wallet(WALLET_A)));
         uint256 deadline = vm.getBlockTimestamp() + 1;
-        bytes memory sig = sign(WALLET_A, typed(g, abi.encode(g.SCHEDULE_UPGRADE_TYPEHASH(), v2, 0, deadline)));
+        bytes memory sig = sign(WALLET_A, scheduleDigest(g, v2, 2, v2.codehash, 0, deadline));
         vm.expectRevert(DepositAccountState.BadSignature.selector);
-        gr.scheduleUpgrade(v2, 0, deadline, sig);
+        gr.scheduleUpgrade(v2, 2, v2.codehash, 0, deadline, sig);
         vm.expectRevert(DepositAccountState.NotInitialised.selector);
         gr.applyUpgrade();
         vm.expectRevert(DepositAccountState.NotInitialised.selector);
@@ -977,7 +996,7 @@ contract UpgradeTest is Helpers {
         vm.expectRevert(DepositAccountState.NotAllowed.selector);
         m.cancelWithdrawalAddress(DEST, 1, 1, "");
         vm.expectRevert(DepositAccountState.NotAllowed.selector);
-        m.scheduleUpgrade(v2, 0, 1, "");
+        m.scheduleUpgrade(v2, 2, bytes32(0), 0, 1, "");
         vm.expectRevert(DepositAccountState.NotAllowed.selector);
         m.cancelUpgrade(v2, 1, 1, "");
         vm.expectRevert(DepositAccountState.NotAllowed.selector);

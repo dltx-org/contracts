@@ -3,7 +3,7 @@
     "ExitArgs": "What an `exitStep` caller names: `cancels`, resting orders to cancel (each a `Cancel`: its asset id, whether `id` is a client id, and the id); `perps`, DEX 0 perps holding a position besides the strategy's own; `dexes`, HIP-3 DEXes to watch (each a `DexHint`: the DEX's index and the collateral token its balance is moved to spot in, USDC 0 or a pinned stablecoin, anything else read as USDC). A wrong hint is refused by Hyperliquid and costs nothing.",
     "Holding": "One holding in a leg's report: an asset id (`keccak256(\"dltx.asset.USD\")`, `keccak256(\"dltx.asset.ETH\")`) and a signed quantity in 18 decimals.",
     "PriceSourcePin": "A price the hub values a strategy with, pinned by the combination factory for one hub chain and one asset: a Chainlink feed in USD, or a rate and its base's USD feed, and the oldest round accepted, in seconds.",
-    "Cancel": "A resting Hyperliquid order to cancel in an exit: its market, and its order id or the client id it was placed with.",
+    "Cancel": "A resting Hyperliquid order to cancel, in an exit or by `cancelResting`: its market, and its order id or the client id it was placed with.",
     "DexHint": "A Hyperliquid market (DEX) for the exit to read, and the collateral token its balance is sent back in (USDC or a pinned stablecoin). A wrong hint is refused by Hyperliquid and costs nothing.",
     "AssetProfile": "An asset profile (asset-profiles-design.md §3.1): the long's facts on Arbitrum (the token, its decimals and aToken, the Uniswap V3 pool and fee tier, the token order, the holding's id, the bound's floor, a wrapped asset's rate feed with its description and freshness), the short's on HyperEVM (the perp, its coin and size decimals, the underlying, the short's asset id), and the hub's two price pins. Its id is `keccak256(abi.encode(profile))`.",
     "PricePin": "One of a profile's fee price pins: the asset id, its kind (1 a USD feed, 2 a rate × a USD feed), the feed(s) and the oldest round accepted. An unused pin is all zero.",
@@ -92,20 +92,23 @@
       },
       "ownerAction": {
         "caller": "owner",
-        "does": "Carries out one action the owner signed for this contract. Action 1 revokes the execution key here; action 2 allows it again. On the short contract only, action 3 replaces the Hyperliquid agent, action 4 cancels any pending agent and action 5 releases the exit's reservation of USDC sent from spot (budget mode). Revoking on the short contract also drops DLTX's pending agent proposal.",
+        "does": "Carries out one action the owner signed for this contract. Action 1 revokes the execution key here; action 2 allows it again. On the short contract only, action 3 replaces the Hyperliquid agent, action 4 cancels any pending agent, action 5 releases the exit's reservation of USDC sent from spot (budget mode), action 7 (`USE_CONTRACT`) moves the account to the contract route (on the contract route it drops any pending agent and cuts a standing referral setup agent at once), action 8 (`END_QUARANTINE`) ends the quarantine that follows, and action 9 (`CONFIRM_SETUP`) releases money and growth after the referral setup. Number 6 is not an action here. Revoking on the short contract also drops DLTX's pending agent proposal.",
         "who": "The owner: a local action signed by one credential in effect in the deposit contract on this chain. Anyone may submit it.",
         "when": "In any state, before the signature's deadline. Each contract is revoked and allowed on its own: revoking one does not revoke the others.",
         "checks": [
           "The deadline has not passed.",
           "The signature is the owner's `VaultAction(address vault, uint256 chainId, uint8 action, address agent, uint256 nonce, uint256 deadline)`, naming this contract, this chain and the signing credential's current nonce (`ownerNonceOf(credential)`). Each credential has its own nonce: its signatures are accepted once, in order (an older \"allow\" cannot be replayed after the same credential's \"revoke\"), and no other credential can spend it, so none can block another's action by acting first.",
           "The credential named is the one that made the signature: a wallet's recovered address, a passkey's key, as the deposit contract reads them; anything else reverts (`BadSignature`).",
-          "On the hub and the long contract, actions 3, 4 and 5 revert (`Unsupported`), and the nonce is not used up.",
-          "On the short contract, action 3 with the burner (`burner()`) takes effect at once. Any other agent waits 24 hours (`applyOwnerAgent`), and a zero agent reverts.",
-          "On the short contract, action 5 sets the reservation (`reserved`) to zero: the owner's word that the USDC sends from spot to HyperEVM it counts will not execute. What was reserved may then leave spot again."
+          "On the hub and the long contract, actions 3, 4, 5, 7, 8 and 9 revert (`Unsupported`), and the nonce is not used up; so does any other number on the short contract.",
+          "On the short contract, action 3 with the burner sentinel `0x0000000000000000000000000000000000000001` takes effect at once: the contract derives a fresh burner then (the audit of 2026-10-26, finding 1). Any other agent waits 24 hours (`applyOwnerAgent`), and a zero agent reverts.",
+          "On the short contract, action 5 sets the reservation (`reserved`) to zero: the owner's word that the USDC sends from spot to HyperEVM it counts will not execute. What was reserved may then leave spot again.",
+          "On the short contract, action 7 on the agent route takes effect at once: the route becomes the contract route, quarantine starts, both pending agents are dropped, the builder approval is revoked, and a fresh burner replaces the agent. On the contract route it only drops both pending agents (a pending switch back among them). The `agent` field is ignored: sign 0.",
+          "On the short contract, on the contract route, action 3 with the burner is the owner's retry (a fresh burner, the quarantine's hour from now), and action 3 with another agent is the switch back to the agent route, applied by `applyOwnerAgent` after 24 hours.",
+          "On the short contract, actions 8 and 9 name the burner the owner saw approved on Hyperliquid's API in `agent`, and run only if the contract's own reads agree (`readsClean`): 8 in quarantine, an hour after the last burner; 9 once, on the contract route, after the referral setup ended (`routeOwnerAction`)."
         ],
         "params": {
-          "action": "1 revoke the execution key, 2 allow it again, 3 replace the agent (the short contract only), 4 cancel the pending agents (the short contract only), 5 release the exit's reservation (the short contract only).",
-          "agent": "For action 3, the new agent. The other actions ignore it, but it is signed all the same.",
+          "action": "1 revoke the execution key, 2 allow it again; on the short contract only: 3 replace the agent, 4 cancel the pending agents, 5 release the exit's reservation, 7 use the contract route, 8 end the quarantine, 9 confirm the referral setup.",
+          "agent": "For action 3, the new agent; for actions 8 and 9, the burner approved now. The other actions ignore it, but it is signed all the same.",
           "credential": "The signing credential's id in the deposit contract (`credentialId`: keccak of its kind, x and y), whose nonce the signature carries.",
           "deadline": "When the signature expires, as a Unix time in seconds: the call reverts after it.",
           "signature": "One owner credential's signature over the EIP-712 message, in the deposit contract's \"DLTX Owner\" domain (no chain id): `0x01 ‖ r ‖ s ‖ v` for a wallet, or `0x02 ‖ x ‖ y ‖` the ABI-encoded WebAuthn assertion for a passkey."
@@ -312,6 +315,9 @@
       },
       "upgradeModule": {
         "does": "The shared upgrade module this implementation runs by DELEGATECALL (`VaultUpgrade`), its code hash checked when the implementation was deployed."
+      },
+      "othersPending": {
+        "does": "USDC minted to a leg from a burn by an address that is not a member of the strategy and not yet passed on to its hub, in USDC's 6 decimals: never in the leg's holdings, never spent by the execution key, forwarded by the next report or exit step (zero at the hub, where such money is capital at once). The audit of 2026-10-26, finding 5."
       }
     },
     "events": {
@@ -433,6 +439,13 @@
           "target": "What it would have moved to.",
           "why": "1 the scheduler, 2 the switch's conditions, 3 the exit."
         }
+      },
+      "OthersForwarded": {
+        "does": "A leg passed USDC from outside the strategy on to its hub: on the hub's chain as a plain transfer, else as a Circle burn that anyone may complete straight into the hub's balance. Either way it reaches the hub outside the strategy's counted moves, so the hub books it as capital (its mark and, in exit, the exit's thresholds), never as profit.",
+        "params": {
+          "amount": "The amount passed on, in USDC's 6 decimals.",
+          "fee": "Circle's minimum fee taken from it (0 on the hub's chain)."
+        }
       }
     },
     "errors": {
@@ -471,7 +484,7 @@
         "HubFee",
         "VaultUpgrade"
       ],
-      "title": "The strategy hub, version 1",
+      "title": "The strategy hub",
       "brief": "A strategy's account and home on Arbitrum, owner-upgradeable: it funds the legs, pays you back, schedules your upgrade or profile switch.",
       "summary": "Version 1 of the hub: the same account (it holds no market position, funds the legs, pays your deposit contract back, computes DLTX's performance fee, and in an exit routes its cash to the long contract's debt before paying your withdrawal address), now behind a fixed proxy whose code only your signature moves. It is the strategy's home for an upgrade and for a switch of its asset profile: you sign once, 24 hours pass during which any of your credentials can cancel, then anyone applies it and the legs follow. Its fee's price pins are its asset profile's, read from the registry at creation and never changed. Its valuation, fee, profile check and profile switch run in a fixed module, `HubFee`; its upgrade path in the shared `VaultUpgrade`.",
       "functions": {
@@ -1111,7 +1124,7 @@
         "AaveV3AssetLegRewards",
         "VaultUpgrade"
       ],
-      "title": "The long contract, version 1",
+      "title": "The long contract",
       "brief": "A strategy's Aave V3 position on Arbitrum on any allowed asset (its profile), owner-upgradeable.",
       "summary": "Version 1 of the long contract, for any asset: an Aave V3 position on Arbitrum, its asset supplied and USDC borrowed, the asset and its route (the token, its aToken, the Uniswap V3 pool and fee tier, a wrapped asset's rate feed) being its stored asset profile, not its code. DLTX's execution key operates it within the limits you signed (the health floor, the price bound, the daily loss budget, the fast-bridge fee cap); every bound on a sale is held to Aave's price times the market rate of a wrapped asset (never above Aave's, at most 10 % below it). It sends money only to the strategy's other contracts. In an exit it unwinds in independent parts, every sale held at the margin to 50 bp of that reference, and sends everything to its hub. Its exit runs in `AaveV3AssetLegExit`; its rewards path, the key's sales, the profile check and the profile switch in `AaveV3AssetLegRewards`; its upgrade path in the shared `VaultUpgrade`.",
       "functions": {
@@ -1299,7 +1312,7 @@
           }
         },
         "healthFloor": {
-          "does": "The lowest Aave health factor a borrow, a withdrawal or an e-mode change may leave, in Aave's scale (18 decimals, 1e18 = 1.0). Fixed at creation, from the configuration the owner signed."
+          "does": "The lowest Aave health factor a borrow, a withdrawal or an e-mode change may leave, in Aave's scale (18 decimals, 1e18 = 1.0). Set at creation from the configuration the owner signed; afterwards only the owner changes it (`setHealthFloor`). Given Aave's liquidation threshold it bounds the long's leverage: DLTX's key can never take the position nearer liquidation."
         },
         "oracleBoundBp": {
           "does": "How far below Aave's oracle price any sale of this contract may go, in bp: the bound on `swap`, on the repay with collateral and on the exit's sales. Fixed at creation."
@@ -1612,6 +1625,23 @@
           "params": {
             "part": "8 or 9."
           }
+        },
+        "setHealthFloor": {
+          "caller": "anyone",
+          "does": "Sets the health floor (`healthFloor`) the owner signed in `HealthFloor(vault, chainId, healthFloor, nonce, deadline)`: a change of risk preset. DLTX's key never sets it. The audit of 2026-10-26, finding 6.",
+          "who": "Anyone may submit; the owner's signature is the authority.",
+          "when": "In any state.",
+          "checks": [
+            "The deadline has not passed.",
+            "The signature is by the credential named, through the deposit contract, over this contract, this chain and the credential's next nonce (`ownerNonceOf`), which it spends.",
+            "The floor is between 1.05 and 3 (18 decimals)."
+          ],
+          "params": {
+            "floor": "The new floor, 18 decimals.",
+            "credential": "The signing credential's id.",
+            "deadline": "The signature's expiry, a Unix time in seconds.",
+            "signature": "The owner's signature."
+          }
         }
       },
       "events": {
@@ -1674,6 +1704,12 @@
             "fromProfile": "The profile before.",
             "toProfile": "The profile now."
           }
+        },
+        "HealthFloorSet": {
+          "does": "The owner set the health floor.",
+          "params": {
+            "healthFloor": "The new floor, 18 decimals."
+          }
         }
       },
       "errors": {
@@ -1696,11 +1732,15 @@
       "module": [
         "HyperCoreLegExit",
         "HyperCoreLegExitB",
-        "VaultUpgrade"
+        "VaultUpgrade",
+        "HyperCoreLegRoute"
       ],
-      "title": "The short contract, version 1",
+      "moduleFallback": {
+        "HyperCoreLegRoute": "open"
+      },
+      "title": "The short contract",
       "brief": "A strategy's Hyperliquid account on HyperEVM, its perp the profile's, owner-upgradeable.",
-      "summary": "Version 1 of the short contract: the same Hyperliquid account on HyperEVM (an agent trades it, DLTX's execution key moves its margin and reduces with reduce-only orders, money goes only to the strategy's other contracts), behind a fixed proxy whose code moves only when its hub's owner-signed upgrade reaches it. Its perp, the perp's coin and its asset id are its asset profile's, checked against HyperCore at creation: the asset id is derived from the coin, so a perp can never report as another asset. Its exit runs in two modules, `HyperCoreLegExit` and `HyperCoreLegExitB`; its upgrade path in the shared `VaultUpgrade`.",
+      "summary": "Version 1 of the short contract: the same Hyperliquid account on HyperEVM, behind a fixed proxy whose code moves only when its hub's owner-signed upgrade reaches it. Its orders go one of two ways, the owner's choice at creation (`route`): through an agent, which trades the account while DLTX's execution key moves its margin and reduces with reduce-only orders; or through the contract itself (the contract route), with no agent: every order is an immediate-or-cancel on the strategy's perp, banded against Hyperliquid's oracle and mark, growth under the owner's leverage cap and a 24-hour budget. Money goes only to the strategy's other contracts. Its perp, the perp's coin and its asset id are its asset profile's, checked against HyperCore at creation: the asset id is derived from the coin, so a perp can never report as another asset. Its exit runs in two modules, `HyperCoreLegExit` and `HyperCoreLegExitB`; its orders, the contract route's clean-up, the builder fee and the referral setup in a third, `HyperCoreLegRoute`, which every selector the contract does not name reaches; its upgrade path in the shared `VaultUpgrade`.",
       "functions": {
         "legInfo": {
           "does": "Describes this leg code to the combination factory, which checks its pins against it.",
@@ -1720,11 +1760,16 @@
             "The asset is named and is not USD.",
             "The order bound is 30 to 1,000 bp.",
             "The fast-fee cap is at most 50 bp.",
-            "The fee budget is 1 to 500 bp."
+            "The fee budget is 1 to 500 bp.",
+            "The route is 1 (agent) or 2 (contract), the side 2 (short): the long side (1) is refused until a pair uses it.",
+            "The leverage cap is 100 (1×) to 2,000 (20×), and at most the perp's max leverage × 100 read from HyperCore now.",
+            "The growth and reduction bands are each 10 bp to the order bound; the reduction band is also at most the perp's maintenance ceiling: the band whose compounded cost with the 5 bp fee is half the perp's maintenance rate (ETH 94 bp, BTC 57 bp).",
+            "The builder fee is at most 20 (2 bp, in tenths of a bp), and a fee above 0 names a builder (not the zero address).",
+            "The referral setup is signed only on the contract route."
           ],
           "params": {
             "r": "The combination factory's registry (this chain's), whose open asset profiles the parameters are checked against: an implementation names no registry (version 1's are the registry's genesis).",
-            "params": "The ABI-encoded `ShortParams`: the perp's index, its asset as the hub values it, the order bound, the fast-fee cap and the fee budget, all in bp."
+            "params": "The ABI-encoded `HyperCoreParams`: the profile, the perp's index, its coin and asset id, the order bound, the fast-fee cap and the fee budget (bp), the route, the side, the leverage cap (× 100), the growth and reduction bands (bp), the builder and its fee (tenths of a bp), and whether the referral setup runs."
           }
         },
         "receive": {
@@ -1738,7 +1783,9 @@
           "who": "The execution key, while not revoked.",
           "when": "Outside the exit.",
           "checks": [
-            "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit."
+            "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit.",
+            "The referral setup does not hold money (`SetupRefused`): its agent does not stand (`setupOpen`), and on the contract route a setup that ran has the owner's `CONFIRM_SETUP` (`setupConfirmed`).",
+            "Before the referral setup runs, the amount is counted (it bounds the setup, which is refused past 5 USDC sent: a deposit sent in the setup's own block is not yet in HyperCore's reads)."
           ],
           "params": {
             "amount": "The USDC to deposit (6 decimals)."
@@ -1750,7 +1797,8 @@
           "who": "The execution key, while not revoked.",
           "when": "Outside the exit. The second action's fee is paid in HYPE from the account's spot balance, so it needs a little HYPE there (`topUpHype`). The account's first outgoing USDC transfer also pays about 1 USDC from spot on top of the amount; on a first call with no other USDC on spot, HyperCore drops the second action silently and the amount stays on spot. `prime` pays that fee first.",
           "checks": [
-            "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit."
+            "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit.",
+            "On the contract route: not in quarantine (`Quarantined`). The first action moves only what spot's available USDC lacks (`debit`), so a retry after a dropped second action takes nothing from margin twice. When `debit` is above 0, the position after it stays under the leverage cap at the mark (`ntlPos ≤ L × (accountValue − debit)`) and at the oracle (the strategy's perp, the equity re-valued there), else `CapExceeded`; and it is the one unsettled leverage-raising action (`Unsettled` until HyperCore has run `SETTLE_L1_BLOCKS` of its own blocks past the last one). When `debit` is 0 only the second action is sent, with neither check."
           ],
           "params": {
             "amount": "The USDC to bring back (6 decimals)."
@@ -1762,7 +1810,8 @@
           "who": "The execution key, while not revoked.",
           "when": "Outside the exit, once at custody creation, with HYPE on the account's spot for the second action's fee.",
           "checks": [
-            "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit."
+            "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit.",
+            "On the contract route: not in quarantine (`Quarantined`), DEX 0 flat (`NotFlat`), and the one unsettled leverage-raising action (`Unsettled`)."
           ]
         },
         "topUpHype": {
@@ -1772,6 +1821,7 @@
           "when": "Any time; the exit needs it when `exitStatus` raises flag 2.",
           "checks": [
             "Outside the exit, the caller is the group's execution key and the owner has not revoked it.",
+            "Outside the exit, the referral setup does not hold money (`SetupRefused`): its agent, or a spot TWAP it left before the owner's `CONFIRM_SETUP`, could trade the HYPE. The exit is never refused.",
             "The transfer to `HYPE_SYSTEM` succeeds: the contract holds at least `amount`, the HYPE sent with the call included."
           ],
           "params": {
@@ -1799,17 +1849,22 @@
         },
         "order": {
           "caller": "execution-key",
-          "does": "Places this account's own order on the strategy's perp: immediate-or-cancel, reduce-only, at Hyperliquid's oracle price moved by the order bound against the trade. Growing the position is the agent's work alone.",
+          "does": "Places this account's own immediate-or-cancel order on the strategy's perp, under the engine's client id. On the agent route it is reduce-only, priced from the stricter of the perp's oracle and mark moved by the order bound, at most the perp's maintenance ceiling; growing the position is the agent's work. On the contract route it is the route's order: a reduction within the reduction band of both the mark and the oracle, never held by anything; growth on the signed side within the growth band of the stricter price, under the leverage cap and the 24-hour budget. Emits `RouteOrder` on both routes.",
           "who": "The execution key, while not revoked.",
           "when": "Outside the exit.",
           "checks": [
             "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit.",
-            "`reduceOnly` is true."
+            "Agent route: `reduceOnly` is true (`NotAllowed`), and the perp can be priced now (`BadAsset`).",
+            "Contract route: `sz` is a whole number of size steps (`BadSize`), and the mark and the oracle read above 0.",
+            "Contract route, a reduction: it closes (a buy on a short, a sale on a long, else `NotGrowth`) and is at most the position (`OrderTooLarge`).",
+            "Contract route, growth: not in quarantine (`Quarantined`), the referral setup does not hold it (`SetupRefused`), the perp is not isolated (`Isolated`), the direction is the signed side and the position is flat or already on it (`NotGrowth`).",
+            "Contract route, growth: after it the position stays under the leverage cap, its worst fill counted, at the mark (every DEX 0 position) and at the oracle (`CapExceeded`); the order is at most a quarter of the cap (`OrderTooLarge`); the mark and the oracle are at most 20 bp apart (`MarkOracleGap`); it is worth at least 10 USD at its limit (`BelowMinimum`); its notional at the mark comes out of the budget (`GrowthBudget`); and it is the one unsettled leverage-raising action (`Unsettled`)."
           ],
           "params": {
-            "isBuy": "True to buy (reduce a short), false to sell (reduce a long).",
-            "sz": "The size, in 1e8 × the asset's units.",
-            "reduceOnly": "Must be true: any other value reverts."
+            "isBuy": "True to buy, false to sell.",
+            "sz": "The size, in 1e8 × the asset's units; on the contract route a whole number of the perp's size steps.",
+            "reduceOnly": "True for a reduction. On the agent route any other value reverts; on the contract route false is growth.",
+            "cloid": "The client id the engine confirms the order by on Hyperliquid (0 for none)."
           }
         },
         "cancel": {
@@ -1833,6 +1888,7 @@
           "when": "Outside the exit.",
           "checks": [
             "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit.",
+            "The route is the agent route: on the contract route it reverts (`NotAllowed`); there the only way to an agent is the owner's, after 24 hours.",
             "`next` is not the zero address."
           ],
           "params": {
@@ -1846,6 +1902,7 @@
           "when": "Outside the exit; at once for the account's first agent, otherwise 24 hours after the proposal.",
           "checks": [
             "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit.",
+            "The route is the agent route (`NotAllowed` on the contract route).",
             "An agent is proposed.",
             "If an agent was ever set, 24 hours have passed since the proposal.",
             "The contract's HyperCore account exists (its first deposit made it)."
@@ -1853,7 +1910,7 @@
         },
         "applyOwnerAgent": {
           "caller": "anyone",
-          "does": "Makes the agent the owner chose (other than the burner) the account's agent on HyperCore, once the choice has stood 24 hours. In exit, it also becomes the agent the exit keeps re-approving.",
+          "does": "Makes the agent the owner chose (other than a burner) the account's agent on HyperCore, once the choice has stood 24 hours. In exit, it also becomes the agent the exit keeps re-approving. On the contract route it is the owner's switch back: the route becomes the agent route (`RouteChanged`) and any quarantine ends.",
           "who": "Anyone.",
           "when": "In any state, 24 hours after the owner's choice, unless an owner credential cancelled it, and only while the credential that chose it is still one in this chain's owner record: removing a stolen credential voids its pending choice.",
           "checks": [
@@ -1861,9 +1918,6 @@
             "24 hours have passed since the owner chose it.",
             "The credential that signed the choice is still a credential in effect in the deposit contract's record on this chain (`isCredentialId`); otherwise it reverts (`NotAllowed`). An unsynced copy has no credential, so it reverts there too until the record arrives again."
           ]
-        },
-        "burner": {
-          "does": "The burner agent: an address derived from this contract's address, whose key nobody holds. Making it the agent stops all trading at once; the exit begins with it, and the owner may name it with immediate effect."
         },
         "USDC": {
           "does": "Circle's USDC on HyperEVM (6 decimals): the only token the strategy's contracts move between them."
@@ -1920,13 +1974,13 @@
           "does": "Whether an agent has ever been approved: until then DLTX's first proposal applies at once."
         },
         "ownerAgent": {
-          "does": "The agent the owner chose other than the burner, waiting for its 24 hours (zero if none)."
+          "does": "The agent the owner chose other than a burner, waiting for its 24 hours (zero if none)."
         },
         "ownerAgentAt": {
           "does": "When the owner chose that agent, as a Unix time in seconds."
         },
         "exitAgent": {
-          "does": "The agent the exit keeps re-approving: the burner from the moment the exit begins, or the owner's own agent once applied in exit (zero before the exit)."
+          "does": "The agent the exit keeps re-approving: a burner from the moment the exit begins (a fresh one at each re-approval, derived from the previous block's hash and a counter, so no one can claim it on HyperCore first), or the owner's own agent once applied in exit (zero before the exit)."
         },
         "purchases": {
           "does": "How many times the exit has bought HYPE for transfer fees: at most three."
@@ -1960,7 +2014,7 @@
           "checks": [
             "The contract is in exit.",
             "It re-approves the exit's agent, cancels the resting orders named, and adds each HIP-3 DEX named to the watched list when it can be read and holds a position or at least 1 USD (at most 16; when full, a DEX left with no position and at most 0.01 USD gives its place).",
-            "It closes each open position on DEX 0, the strategy's perp and every perp named: reduce-only, immediate-or-cancel, its whole size, at the oracle price moved by the order bound. A named perp index of 10,000 or more reverts.",
+            "It closes each open position on DEX 0, the strategy's perp and every perp named: reduce-only, immediate-or-cancel, its whole size, from the stricter of that perp's oracle and mark moved by the order bound, at most the perp's own maintenance ceiling. A perp it can't price now is not closed and stays open (the owner's `ownerOrder` is the way out). A named perp index of 10,000 or more reverts.",
             "Nothing leaves spot in a call that has a DEX 0 position open, nor while DEX 0 or a watched DEX in its first 7 days shows a position (or, for a watched DEX, cannot be read).",
             "Otherwise it moves DEX 0's withdrawable margin and each flat watched DEX's balance to spot, buys HYPE for fees if spot HYPE is under 0.0002 (the fewest 0.01 steps worth Hyperliquid's 10 USDC order minimum, at most three times), sends spot USDC to HyperEVM once HYPE is there (the balance read; when the read has not fallen since the last such send, which may have been dropped for want of the account's first-transfer fee of about 1 USDC, the balance less 1.05 USDC, so the fee fits), and sells HYPE above 0.0002 and the pinned stablecoins (USDE, USDT0, USDH at 1 USD less the bound) when a sale is worth at least 10 USDC.",
             "A watched DEX still showing a position after 7 days stops holding the rest back (budget mode): from then spot keeps a floor, fixed once DEX 0's margin is on spot: 1.1 times the larger of that position's margin and 10% of its notional, plus 1.05 USDC for the first-transfer fee. What is above the floor and the reservation may leave or be spent, later arrivals on spot included. Each send to HyperEVM is reserved until as much USDC from outside the strategy has arrived there, so a send HyperCore drops is never counted as gone; a send that will never execute stays reserved until the owner's signed action 5. The stablecoins are not sold meanwhile.",
@@ -2175,6 +2229,186 @@
           "params": {
             "p": "The profile."
           }
+        },
+        "burning": {
+          "does": "Whether the account's agent is a burner (an address nobody holds a key for): the exit's re-approvals then name a fresh one each time. The audit of 2026-10-26, finding 1."
+        },
+        "cancelResting": {
+          "caller": "anyone",
+          "does": "Cancels resting orders of this account on HyperCore, any market, by order id or client id. The contract route never rests an order of its own, so a resting order is one an old agent left; cancelling it moves no value, and it must not wait on DLTX. At most 50 a call and not paced, so no one can make the account send actions without bound and no one can starve the owner's cancels with a shared pace; the execution key's own `cancel` is not paced either. Not counted in `opCount`.",
+          "who": "Anyone.",
+          "when": "On the contract route, outside the exit (in the exit the agent may be the owner's own; `exitStep` cancels what it is told).",
+          "checks": [
+            "The contract is not in exit (`Exiting`).",
+            "The route is the contract route (`NotAllowed`).",
+            "At most 50 cancels (`BadParams`)."
+          ],
+          "params": {
+            "cs": "The orders to cancel, each a `Cancel`."
+          }
+        },
+        "closeStray": {
+          "caller": "execution-key",
+          "does": "Closes the whole of another DEX 0 perp's position, one an old agent left: a reduce-only immediate-or-cancel, from that perp's own mark and oracle, at the lower of the reduction band and that perp's maintenance ceiling read now. Paced 20 blocks per perp.",
+          "who": "The execution key, while not revoked.",
+          "when": "On the contract route, outside the exit.",
+          "checks": [
+            "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit.",
+            "`p` is not the strategy's perp and is under 10,000 (`BadAsset`); the route is the contract route and the account holds a position on `p` (`NotAllowed`).",
+            "No close of `p` in the last 20 blocks (`TooEarly`); `p`'s mark and oracle read above 0, and its max leverage too (`BadAsset`)."
+          ],
+          "params": {
+            "p": "The other perp's index on DEX 0."
+          }
+        },
+        "setupAgent": {
+          "caller": "execution-key",
+          "does": "Approves `a` as the account's agent, once, so that DLTX can sign Hyperliquid's `setReferrer` with it: the owner signed `referralSetup` at creation. While it stands no money joins the account, no growth is sent and `topUpHype` is refused; anyone may end it from `setupUntil`, an hour on, and the owner at any time (`REPLACE_AGENT` with the burner, or `USE_CONTRACT`). Not counted in `opCount`.",
+          "who": "The execution key, while not revoked.",
+          "when": "Once, on the contract route, outside quarantine and the exit, before any money of size.",
+          "checks": [
+            "The caller is the group's execution key in the registry, the owner has not revoked it, and the contract is not in exit.",
+            "`referralSetup` is signed, the setup never ran, the route is the contract route, not in quarantine, and `a` is neither zero nor the burner sentinel (`SetupRefused`).",
+            "HyperCore knows the account (`NoCoreAccount`).",
+            "DEX 0 is flat, its account value at most 5 USD, spot USDC (its total) at most 5 USDC, and `toMargin` sent at most 5 USDC before it (`SetupRefused`): a deposit sent in this block is not yet in HyperCore's reads."
+          ],
+          "params": {
+            "a": "The setup agent: an address whose key DLTX holds for the hour."
+          }
+        },
+        "endSetup": {
+          "caller": "anyone",
+          "does": "Replaces the referral setup's agent by a fresh burner. Repeatable, paced 20 blocks: the engine's retry while Hyperliquid's API still shows the setup agent (CoreWriter may drop an approval in silence). Money and growth then wait for the owner's `CONFIRM_SETUP`. Not counted in `opCount`.",
+          "who": "The execution key at any time; anyone once `setupUntil` has passed and while the setup agent still stands (`setupOpen`). A retry after the end is the key's, or the owner's own `REPLACE_AGENT` with the burner: a stranger's would rotate the burner `CONFIRM_SETUP` must name.",
+          "when": "After the setup ran, on the contract route, outside quarantine and the exit.",
+          "checks": [
+            "Not in exit (`Exiting`); the setup ran and the route is the contract route (`SetupRefused`); not in quarantine (`Quarantined`).",
+            "Before `setupUntil`, or once the setup agent no longer stands, the caller is the execution key.",
+            "No end in the last 20 blocks (`TooEarly`)."
+          ]
+        },
+        "routeOwnerAction": {
+          "caller": "self",
+          "does": "Carries out the owner's actions 8 (`END_QUARANTINE`) and 9 (`CONFIRM_SETUP`) for `ownerAction`, which calls it on the contract itself after checking the signature; any other action reverts (`Unsupported`). Each is bound to the agent approved now (the burner the owner saw on Hyperliquid's API) and to the contract's own reads (`readsClean`). Not counted in `opCount`.",
+          "who": "The contract itself, from `ownerAction`.",
+          "when": "Action 8 in quarantine; action 9 once, after the referral setup ended.",
+          "checks": [
+            "The caller is the contract itself (`NotAllowed`).",
+            "Action 8: in quarantine (else `Unsupported`), `next` is the current agent (`NotAllowed`), the last burner went in at least an hour ago (`TooEarly`), and `readsClean` (`NotAllowed`). Quarantine then ends (`QuarantineEnded`).",
+            "Action 9: the setup ran, its agent no longer stands, it was not confirmed yet, and the route is the contract route (`SetupRefused`); `next` is the current agent and `readsClean` (`NotAllowed`). Money and growth then resume (`SetupConfirmed`)."
+          ],
+          "params": {
+            "action": "The owner action: 8 or 9.",
+            "next": "The agent the owner signed: the burner approved now."
+          }
+        },
+        "setBuilderFee": {
+          "caller": "owner",
+          "does": "Sets the Hyperliquid builder fee the agent's orders may carry, by the owner's `BuilderFee` message. The same builder at the same or a lower rate applies at once: stored, and the new approval sent (CoreWriter 12) where one may stand; 0 revokes, in every state; the contract route only stores. A raise, or another builder, waits 24 hours (`applyBuilderFee`), cancellable by any credential. It replaces anything pending. A `BuilderFee` naming the stored builder and rate is also the cancel's message: the app labels it \"cancel\", and a withheld one stays a valid set.",
+          "who": "Anyone may submit it, with one owner credential's signature.",
+          "when": "In any state; in exit only a lowering (the exit's rate is 0 for good).",
+          "checks": [
+            "The deadline has not passed, and the owner's deposit contract accepts the signature of `BuilderFee(address vault, uint256 chainId, address builder, uint16 feeX10, uint256 nonce, uint256 deadline)`, naming this contract, the chain and the signing credential's next nonce.",
+            "`feeX10` is at most 20, and above 0 names a builder, not the zero address (`BadParams`).",
+            "A raise or another builder is refused in exit (`Exiting`).",
+            "A nonzero approval is sent only on the agent route outside the exit (`NotAllowed`)."
+          ],
+          "params": {
+            "b": "The builder: the account the fee goes to.",
+            "feeX10": "The most the builder may take, in tenths of a basis point: 0 to 20.",
+            "credential": "The signing credential's id in the deposit contract, whose nonce the signature carries.",
+            "deadline": "When the signature expires, as a Unix time in seconds.",
+            "signature": "One owner credential's signature over the EIP-712 message, in the deposit contract's domain."
+          }
+        },
+        "applyBuilderFee": {
+          "caller": "anyone",
+          "does": "Applies the owner's pending raise or builder change once it has stood 24 hours. A builder change revokes the old builder first; the new approval is sent on the agent route, and the contract route only stores it.",
+          "who": "Anyone.",
+          "when": "Outside the exit, 24 hours after the owner signed it, while the credential that signed it still stands.",
+          "checks": [
+            "Not in exit (`Exiting`).",
+            "A change is pending and its signing credential is still one in the deposit contract's record on this chain (`NotAllowed`).",
+            "24 hours have passed (`TooEarly`)."
+          ]
+        },
+        "cancelBuilderFee": {
+          "caller": "owner",
+          "does": "Drops the pending raise or builder change. The message is the owner's `BuilderFee` naming what stands now: the stored builder and rate.",
+          "who": "Anyone may submit it, with one owner credential's signature.",
+          "when": "In any state.",
+          "checks": [
+            "The deadline has not passed, and the deposit contract accepts the signature of a `BuilderFee` naming the stored builder and rate and the signing credential's next nonce."
+          ],
+          "params": {
+            "credential": "The signing credential's id in the deposit contract, whose nonce the signature carries.",
+            "deadline": "When the signature expires, as a Unix time in seconds.",
+            "signature": "One owner credential's signature over the EIP-712 message, in the deposit contract's domain."
+          }
+        },
+        "approveBuilder": {
+          "caller": "anyone",
+          "does": "Sends the signed builder's approval at the signed rate (CoreWriter 12); it moves no money. At a rate of 0 it sends nothing. Repeatable once every 20 blocks; in exit the rate is 0, so it is a no-op.",
+          "who": "Anyone.",
+          "when": "On the agent route, outside the exit.",
+          "checks": [
+            "A nonzero rate is sent only on the agent route outside the exit (`NotAllowed`).",
+            "No approval sent in the last 20 blocks (`TooEarly`)."
+          ]
+        },
+        "readsClean": {
+          "does": "What the owner's `END_QUARANTINE` and `CONFIRM_SETUP` re-check of the account, as the contract reads it: the strategy's perp is not isolated, and DEX 0's notional is that perp's within one size step, so no other DEX 0 position. The contract can't read Hyperliquid's mode, agents, TWAPs or HIP-3 positions: those are the owner's own check, on Hyperliquid's API."
+        },
+        "routeModule": {
+          "does": "The route module (`HyperCoreLegRoute`: the orders on both routes, `cancelResting`, `closeStray`, the builder fee, the referral setup, the checks of actions 8 and 9), its code hash checked when the implementation was deployed. Every selector the contract and the exit modules don't name reaches it; it refuses the rest (`Unsupported`)."
+        },
+        "route": {
+          "does": "How the account's orders are sent: 1 by an agent, 2 by the contract itself (the contract route). Signed at creation; only the owner moves it later (`USE_CONTRACT`, or a switch back through `REPLACE_AGENT`)."
+        },
+        "side": {
+          "does": "The strategy's position on its perp: 2 short, 1 long (refused at creation until a pair uses it). Growth on the contract route is on this side only. Fixed at creation."
+        },
+        "maxLeverageX100": {
+          "does": "The contract route's leverage cap, × 100: growth may not take the notional past it × the account's value. Fixed at creation."
+        },
+        "growBoundBp": {
+          "does": "The contract route's growth band, in bp, from the stricter of the oracle and the mark. Fixed at creation."
+        },
+        "reduceBoundBp": {
+          "does": "The contract route's reduction band, in bp, against both the mark and the oracle (`closeStray` too). Fixed at creation."
+        },
+        "quarantine": {
+          "does": "Whether the contract route's quarantine is on: after a switch from the agent route, until the owner's `END_QUARANTINE`. Growth, `fromMargin` and `prime` are refused meanwhile."
+        },
+        "builder": {
+          "does": "The Hyperliquid builder the agent's orders may pay. Changed only by the owner's `BuilderFee`."
+        },
+        "builderFeeX10": {
+          "does": "The builder fee's ceiling, in tenths of a bp (0 to 20); 0 at launch, and 0 for good once the exit begins."
+        },
+        "pendingBuilder": {
+          "does": "The builder of the owner's pending change (zero for none)."
+        },
+        "pendingBuilderFeeX10": {
+          "does": "The rate of the owner's pending raise or builder change."
+        },
+        "pendingBuilderAt": {
+          "does": "When the owner signed the pending change, as a Unix time in seconds (0 for none): it may apply 24 hours later."
+        },
+        "referralSetup": {
+          "does": "Whether the owner signed the one-time referral setup at creation (contract route only)."
+        },
+        "setupDone": {
+          "does": "Whether the referral setup ran (`setupAgent`): once, for good."
+        },
+        "setupUntil": {
+          "does": "From when anyone may end the referral setup, as a Unix time in seconds: an hour after `setupAgent`. Kept after the end."
+        },
+        "setupOpen": {
+          "does": "Whether the referral setup's agent still stands: set by `setupAgent`, cleared by the next agent the contract names, whoever names it. While it stands no money joins the account and no growth is sent."
+        },
+        "setupConfirmed": {
+          "does": "Whether the owner signed `CONFIRM_SETUP` after the referral setup. On the contract route, money and growth wait for it once a setup ran."
         }
       },
       "events": {
@@ -2213,22 +2447,83 @@
           "params": {
             "link": "The leg's index."
           }
+        },
+        "RouteChanged": {
+          "does": "The account's route changed: to the contract route (`USE_CONTRACT`) or back to the agent route (`applyOwnerAgent`).",
+          "params": {
+            "route": "1 agent, 2 contract."
+          }
+        },
+        "QuarantineEnded": {
+          "does": "The owner's `END_QUARANTINE` ended the quarantine: growth and margin out resume on the contract route."
+        },
+        "RouteOrder": {
+          "does": "An order the contract sent through CoreWriter, on either route (`order`, `closeStray`). Sent, not filled: HyperCore applies it after the block, or drops it.",
+          "params": {
+            "cloid": "The engine's client id (0 for `closeStray`).",
+            "isBuy": "True for a buy.",
+            "sz": "The size, in 1e8 × the asset's units.",
+            "limit": "The limit price, 1e8 × the price.",
+            "reduceOnly": "Whether it is reduce-only."
+          }
+        },
+        "BuilderFeeSet": {
+          "does": "The builder fee as it now stands.",
+          "params": {
+            "builder": "The builder.",
+            "feeX10": "The rate, in tenths of a bp."
+          }
+        },
+        "BuilderFeeProposed": {
+          "does": "The owner's raise or builder change, waiting 24 hours.",
+          "params": {
+            "builder": "The builder named.",
+            "feeX10": "The rate, in tenths of a bp.",
+            "effectiveAt": "When it may apply, as a Unix time in seconds."
+          }
+        },
+        "BuilderFeeCancelled": {
+          "does": "An owner credential dropped the pending builder fee change."
+        },
+        "SetupAgent": {
+          "does": "The referral setup agent was approved.",
+          "params": {
+            "agent": "The setup agent's address.",
+            "until": "From when anyone may end it, as a Unix time in seconds."
+          }
+        },
+        "SetupEnded": {
+          "does": "A burner was sent in the setup agent's place. Only sent: CoreWriter may drop it, so the engine reads Hyperliquid's API before the owner confirms."
+        },
+        "SetupConfirmed": {
+          "does": "The owner's `CONFIRM_SETUP`: the account read clean after the referral setup; money and growth may resume."
         }
       },
       "errors": {
-        "TooEarly": "An agent was applied before its 24 hours, or the same token's residue was swept again within 20 blocks.",
-        "NoCoreAccount": "`applyAgent` was called before the contract's HyperCore account exists (its first `toMargin` creates it).",
+        "TooEarly": "An agent or a builder change was applied before its 24 hours, the same token's residue was swept again within 20 blocks, `closeStray`, `endSetup` or `approveBuilder` came within 20 blocks of the last, or `END_QUARANTINE` within an hour of the last burner.",
+        "NoCoreAccount": "`applyAgent` or `setupAgent` was called before the contract's HyperCore account exists (its first `toMargin` creates it).",
         "NoAgent": "An agent named or proposed is the zero address, or there is no pending agent to apply.",
-        "BadAsset": "The exit named a perp index of 10,000 or more; an owner order's asset or `szDecimals` is invalid, or it buys on spot; or the token swept is not pinned or has no residue.",
+        "BadAsset": "The exit named a perp index of 10,000 or more; an owner order's asset or `szDecimals` is invalid, or it buys on spot; or the token swept is not pinned or has no residue; `closeStray` named the strategy's perp, an index of 10,000 or more, or a perp it can't price; or the agent route's `order` found the perp unpriced.",
         "NotResidue": "`sweepResidue` was called while the exit is not recovered with residue.",
         "NotOwnerWallet": "The address is not an owner wallet credential on this chain, or for the sweep, `proposeSweep` did not see it at least 24 hours ago.",
-        "BadParams": "`validateParams` refused the parameters: a perp outside DEX 0, an asset that is zero or USD, or a bound, fee cap or fee budget outside its range."
+        "BadParams": "`validateParams` refused the parameters (a perp outside DEX 0, an asset that is zero or USD, a bound, fee cap, fee budget, route, side, leverage cap, band or builder fee outside its range, a long side, a builder fee above 0 with no builder, or a referral setup off the contract route), `setBuilderFee` named a fee above 20 or a fee above 0 with no builder, or `cancelResting` named more than 50 orders.",
+        "Quarantined": "Growth, `fromMargin` or `prime` on the contract route in quarantine, or `endSetup` in quarantine.",
+        "NotGrowth": "A contract-route order in the wrong direction: a reduction that doesn't close, or growth off the signed side or across zero.",
+        "CapExceeded": "Growth or `fromMargin` on the contract route would take the position past the leverage cap, at the mark or at the oracle.",
+        "OrderTooLarge": "A contract-route reduction larger than the position, or a growth order above a quarter of the cap.",
+        "BelowMinimum": "A growth order worth under Hyperliquid's 10 USD minimum at its limit.",
+        "MarkOracleGap": "Growth while the mark and the oracle are more than 20 bp apart, of the mark.",
+        "GrowthBudget": "A growth order whose notional at the mark exceeds what is left of the 24-hour budget.",
+        "Isolated": "Growth while the strategy's perp is isolated.",
+        "Unsettled": "A leverage-raising action (growth, `fromMargin`, `prime`) before HyperCore has run `SETTLE_L1_BLOCKS` of its own blocks past the last one.",
+        "NotFlat": "`prime` on the contract route while DEX 0 holds a position.",
+        "SetupRefused": "The referral setup refused: `setupAgent` outside its conditions, `endSetup` before a setup or off the contract route, `CONFIRM_SETUP` refused, or money, growth or `topUpHype` while the setup holds them."
       }
     },
     {
       "name": "StrategyFactory",
       "source": "src/StrategyFactory.sol",
-      "title": "The combination factory, version 1",
+      "title": "The combination factory",
       "brief": "Creates a strategy's hub and legs as owner-upgradeable proxies on the version and asset profile you signed.",
       "summary": "One factory for every version and every asset profile, at the same address on each chain it serves; your deposit contract trusts it at once (its pinned vault factory). It pins the topology (the hub on Arbitrum, an Aave V3 asset leg on Arbitrum, a Hyperliquid leg on HyperEVM) and each contract's parameter type, but no code: your signed `CreateVault` names a version's manifest, and this chain's registry gives each contract's code from it. Each contract is the same fixed proxy, at an address that never depends on code. It refuses a version not listed here or not checked in, members naming different asset profiles, a profile not open here, and any configuration you did not sign. It holds no money and has no owner.",
       "functions": {
@@ -2337,6 +2632,9 @@
         },
         "proxyImplementation": {
           "does": "What the proxy's constructor asks: the implementation staged for the member being created; zero outside a creation."
+        },
+        "idUsed": {
+          "does": "Whether an owner already created a strategy under this id on this chain: `create` refuses an id twice, since the owner's `BeginExit` names the id, not the configuration (one signature would exit every strategy made under it). The audit of 2026-10-26, low 2."
         }
       },
       "events": {
@@ -2367,7 +2665,7 @@
     {
       "name": "StrategyRegistry",
       "source": "src/StrategyRegistry.sol",
-      "title": "The strategy registry, version 1",
+      "title": "The strategy registry",
       "brief": "One per chain: the execution keys and their check-ins per version, the allowed versions and asset profiles, DLTX's fee address.",
       "summary": "One per chain, at the same address everywhere. It holds the execution key of each of sixteen groups, their check-ins per version and whether a group is stopped on a version (7 days without a check-in opens that version's escape hatch); the list of allowed versions (each a number, a manifest of every member's code on every chain, and the implementations living here) and the list of allowed asset profiles, both appended only by DLTX's recovery key behind 7 public days, a profile's facts checked on this chain when it is accepted, but for version 1 and the first asset profiles (ETH, BTC), which its constructor lists at once: its address, the same on every chain, is the hash of them; and DLTX's fee address. Neither DLTX nor the recovery key can move a strategy: an owner's signature does. It holds no money.",
       "functions": {
@@ -2608,6 +2906,9 @@
         },
         "profileDue": {
           "does": "When a proposed profile may be accepted."
+        },
+        "codeHashOf": {
+          "does": "A listed implementation's code hash as it was reviewed and accepted: a member moves to it, and the factory creates on it, only while its code is still that (code that changed behind a listed address, a re-pointed EIP-7702 delegation, never runs on a member). A version whose code is an EIP-7702 delegation is never listed. The audit of 2026-10-26, finding 4's counterpart."
         }
       },
       "events": {

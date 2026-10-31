@@ -69,7 +69,9 @@ contract ShortVaultCompatTest is FixtureCompat {
     }
 
     // the S12 figures, as the contract must compute them
-    uint64 constant CLOSE_SHORT_PX = 245_570_000_000; // 2,431.40 × 1.01 = 2,455.714 → 5 significant figures, down
+    // version 1 (hyperliquid-contract-route-design.md §6): the 100 bp bound capped at ETH's ceiling (25x: 94 bp),
+    // from the stricter of oracle and mark (here equal): 2,431.40 × 1.0094 = 2,454.255 → 5 significant figures, down
+    uint64 constant CLOSE_SHORT_PX = 245_420_000_000;
     uint64 constant HYPE_BUY_PX = 8_106_600_000; // 80.2635 × 1.01 = 81.066135 → 81.066
     uint64 constant HYPE_BUY_SZ = 13_000_000; // floor(11 / 81.066 / 0.01) steps = 0.13 HYPE
     uint64 constant HYPE_SELL_PX = 7_946_100_000; // 80.2635 × 0.99 = 79.460865 → up: 79.461
@@ -112,7 +114,7 @@ contract ShortVaultCompatTest is FixtureCompat {
         vm.expectRevert(MemberState.NotExecution.selector);
         vault.proposeAgent(stranger);
         vm.expectRevert(MemberState.NotExecution.selector);
-        vault.order(true, 1, false);
+        vault.order(true, 1, false, 0);
         vm.expectRevert(MemberState.NotExecution.selector);
         vault.pause(true);
         vm.expectRevert(MemberState.NotExecution.selector);
@@ -149,19 +151,19 @@ contract ShortVaultCompatTest is FixtureCompat {
     function test_order_boundedByTheOracle_bytes() public {
         uint256 from = writer.count();
         vm.prank(key);
-        vault.order(true, 450_000, true);
-        // hand-written: asset 1, buy, 2,455.70 (0x392d1cd480), 0.0045 (0x6ddd0), reduce-only, IOC, no cloid
+        vault.order(true, 450_000, true, 0);
+        // hand-written: asset 1, buy, 2,454.20 (0x39242c0300), 0.0045 (0x6ddd0), reduce-only, IOC, no cloid
         bytes memory want = bytes.concat(
             hex"01000001",
             hex"0000000000000000000000000000000000000000000000000000000000000001",
             hex"0000000000000000000000000000000000000000000000000000000000000001",
-            hex"000000000000000000000000000000000000000000000000000000392d1cd480",
+            hex"00000000000000000000000000000000000000000000000000000039242c0300",
             hex"000000000000000000000000000000000000000000000000000000000006ddd0",
             hex"0000000000000000000000000000000000000000000000000000000000000001",
             hex"0000000000000000000000000000000000000000000000000000000000000003",
             hex"0000000000000000000000000000000000000000000000000000000000000000"
         );
-        assertEq(uint256(CLOSE_SHORT_PX), 0x392d1cd480);
+        assertEq(uint256(CLOSE_SHORT_PX), 0x39242c0300);
         assertEq(_since(from)[0], want);
     }
 
@@ -169,14 +171,14 @@ contract ShortVaultCompatTest is FixtureCompat {
     function test_order_reduceOnlyOnly() public {
         vm.prank(key);
         vm.expectRevert(MemberState.NotAllowed.selector);
-        vault.order(false, 450_000, false);
+        vault.order(false, 450_000, false, 0);
     }
 
     function test_pause_neverBlocksMoneyOut() public {
         vm.prank(key);
         vault.pause(true);
         vm.startPrank(key);
-        vault.order(false, 450_000, true); // reduce-only still goes
+        vault.order(false, 450_000, true, 0); // reduce-only still goes
         vault.fromMargin(1_000_000); // margin out never blocked
         usdc.mint(address(vault), 1e6);
         vault.send(0, 1e6, false, 0); // nor money to the hub
@@ -219,7 +221,7 @@ contract ShortVaultCompatTest is FixtureCompat {
         sp.orderBoundBp = 101; // a fresh configuration (version 0 changed the perp: version 1 holds it to the profile's)
         StrategySpec memory c = _configWith(_longParams(), sp);
         uint256 before = transmitter.sentCount();
-        IHyperCoreLegV1 fresh = IHyperCoreLegV1(payable(_create(c)));
+        IHyperCoreLegV1 fresh = IHyperCoreLegV1(payable(_createAs(keccak256("fresh"), c)));
         assertEq(transmitter.sentCount(), before + 2);
         for (uint256 k; k < 2; ++k) {
             MockTransmitter.Sent memory m = transmitter.sent(before + k);
@@ -430,14 +432,16 @@ contract ShortVaultCompatTest is FixtureCompat {
 
     /// Decision 34: the owner's replacement by the burner is at once (it cuts trading off)...
     function test_ownerReplacesWithTheBurner_atOnce() public {
-        address b = vault.burner();
+        address b = address(1); // the BURNER sentinel: the address is derived when it is applied
         uint256 deadline = block.timestamp + 1 hours;
         bytes memory sig = _actionSig(address(vault), OwnerMessages.REPLACE_AGENT, b, 0, deadline);
         uint256 from = writer.count();
         vm.prank(stranger); // anyone submits; the signature is the power
         vault.ownerAction(OwnerMessages.REPLACE_AGENT, b, walletCred(wallet), deadline, sig);
-        assertEq(_since(from)[0], _agentBytes(b));
-        assertEq(vault.agent(), b);
+        address burner = vault.agent();
+        assertTrue(vault.burning());
+        assertTrue(burner != b && burner != address(0));
+        assertEq(_since(from)[0], _agentBytes(burner));
         // the same signature again: its nonce is spent
         vm.expectRevert(MemberState.BadSignature.selector);
         vault.ownerAction(OwnerMessages.REPLACE_AGENT, b, walletCred(wallet), deadline, sig);
@@ -466,6 +470,7 @@ contract ShortVaultCompatTest is FixtureCompat {
         vm.expectRevert(HyperCoreLegState.NoAgent.selector);
         vault.applyOwnerAgent();
         assertEq(vault.agent(), mine);
+        assertFalse(vault.burning());
     }
 
     /// In exit too: the burner stands until the owner's own agent has waited its 24 hours.
@@ -474,7 +479,7 @@ contract ShortVaultCompatTest is FixtureCompat {
         address mine = makeAddr("owner-agent");
         uint256 deadline = block.timestamp + 3 days;
         vault.ownerAction(3, mine, walletCred(wallet), deadline, _actionSig(address(vault), 3, mine, 0, deadline));
-        assertEq(vault.agent(), vault.burner());
+        assertTrue(vault.burning());
         vm.warp(vm.getBlockTimestamp() + 24 hours);
         vault.applyOwnerAgent();
         assertEq(vault.agent(), mine);
@@ -659,7 +664,7 @@ contract ShortVaultCompatTest is FixtureCompat {
         a.cancels[0] = HyperCoreLegState.Cancel(ETH, true, 0x1234);
         bytes[] memory r0 = _stepWith(a);
         assertTrue(_has(r0, _core(11, abi.encode(ETH, uint128(0x1234)))), "cancel");
-        assertTrue(_has(r0, _order(ETH, true, CLOSE_SHORT_PX, 450_000, true)), "close at the oracle bound");
+        assertTrue(_has(r0, _order(ETH, true, CLOSE_SHORT_PX, 450_000, true)), "close at the bound");
         assertEq(_countId(r0, 7) + _countId(r0, 13), 0, "nothing moved while a position is open");
         (uint8 st,,) = _state();
         assertEq(st, CLOSING);

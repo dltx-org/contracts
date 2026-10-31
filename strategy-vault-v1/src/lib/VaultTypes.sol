@@ -157,4 +157,13 @@ library OwnerMessages {
     /// The Hyperliquid leg only, in budget mode: the owner releases the exit's pending reservation (sends
     /// from spot never seen to arrive), asserting none will still execute (the partner's audit M4)
     uint8 internal constant RELEASE_RESERVATION = 5;
+    // 6 is `core`'s AAVE `HealthFloor`, never a `VaultAction` code (one number, one meaning, both places)
+    /// The Hyperliquid leg only (hyperliquid-contract-route-design.md §4.6): onto the contract route at
+    /// once, the agent replaced by a fresh burner, quarantine on; on that route, clears pending choices
+    uint8 internal constant USE_CONTRACT = 7;
+    /// The Hyperliquid leg only, in quarantine: ends it, its `agent` naming the current burner
+    uint8 internal constant END_QUARANTINE = 8;
+    /// The Hyperliquid leg only, on the contract route, after its referral setup ended (spec §16): money
+    /// and growth resume, its `agent` naming the current burner
+    uint8 internal constant CONFIRM_SETUP = 9;
 }

@@ -17,7 +17,8 @@ if (existsSync(envFile)) {
   for (const line of readFileSync(envFile, 'utf8').split('\n')) {
     const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim())
     if (!m) continue
-    const [, key, raw] = m
+    const [, name, raw] = m
+    const key = name.replace(/_RPC_PRIMARY$/, '_RPC_URL')
     if (!wanted.includes(key) || process.env[key]) continue
     process.env[key] = raw.replace(/^["']|["']$/g, '')
   }

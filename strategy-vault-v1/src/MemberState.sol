@@ -51,6 +51,10 @@ abstract contract MemberState {
     /// The most of Circle's minimum fee a burn accepts: 10 bp (it is 0 today; Circle's controller can
     /// raise it). Above it, a burn waits rather than paying.
     uint256 internal constant MIN_FEE_CAP_BP = 10;
+    /// The most a leg's exit or forward burns in one Circle message: under Circle's per-message burn limit
+    /// (10 million USDC on Arbitrum and HyperEVM, read 2026-10-27), so a larger balance leaves in parts
+    /// rather than in one burn Circle refuses for ever (the audit's Codex round, P1).
+    uint256 internal constant BURN_CHUNK = 1_000_000e6;
     bytes4 internal constant MIN_FEE_SELECTOR = bytes4(keccak256("getMinFeeAmount(uint256)"));
     /// CCTP V2's message layout: the header, then a burn's body (TokenMessengerV2's BurnMessageV2).
     uint256 internal constant HEADER = 148;
@@ -114,6 +118,13 @@ abstract contract MemberState {
 
     PendingAction internal _pending;
 
+    /// The audit of 2026-10-26, finding 5: a leg's USDC minted from a burn of no member and not yet
+    /// forwarded to its hub (`_forwardOthers`); never in the leg's holdings, never spent by the key.
+    uint256 public othersPending;
+    /// Room for later versions' common fields (the audit's low 10): a field appended to this prefix would
+    /// otherwise move every slot of `HubState` and the legs' states. A field takes a slot from the front.
+    uint256[40] private __gap;
+
     event Initialized(address indexed owner, uint8 group, bytes32 strategyId, bytes32 configHash);
     event ReadySent(uint8 indexed link);
     event ReadyPending(uint8 indexed link);
@@ -126,6 +137,7 @@ abstract contract MemberState {
     event Sent(uint8 indexed link, uint256 amount, uint256 maxFee, uint32 minFinalityThreshold);
     event ReceivedFromLink(uint8 indexed link, uint256 amount, uint256 fee);
     event ReceivedFromOther(address indexed sender, uint32 sourceDomain, uint256 amount);
+    event OthersForwarded(uint256 amount, uint256 fee);
     event ReportSent(uint64 seq);
     /// ERC-1967's, emitted by the instance whenever its implementation changes.
     event Upgraded(address indexed implementation);
@@ -373,9 +385,11 @@ abstract contract MemberState {
     /// its strategy's members, all funded from the hub, so the hub exists. Standard finality, Circle's
     /// minimum fee within the cap; the mint bound to the hub, so it is counted there.
     function _sendAllToHub() internal {
+        _forwardOthers();
         address usdc = _usdc();
-        uint256 amount = IERC20(usdc).balanceOf(address(this));
+        uint256 amount = _ownUsdc(usdc);
         if (amount == 0) return;
+        if (amount > BURN_CHUNK && !_isLocal(0)) amount = BURN_CHUNK; // in parts: Circle's per-message limit
         if (_isLocal(0)) {
             try this.exitTransfer(amount) {} catch {}
             return;
@@ -398,8 +412,10 @@ abstract contract MemberState {
     /// AAVE leg keeps what still repays its debt). A copy, so that the Hyperliquid leg's exit module, which
     /// calls `_sendAllToHub`, keeps its bytecode.
     function _sendToHub(uint256 amount) internal {
+        _forwardOthers();
         address usdc = _usdc();
         if (amount == 0) return;
+        if (amount > BURN_CHUNK && !_isLocal(0)) amount = BURN_CHUNK; // in parts: Circle's per-message limit
         if (_isLocal(0)) {
             try this.exitTransfer(amount) {} catch {}
             return;
@@ -479,6 +495,49 @@ abstract contract MemberState {
         }
         receivedFromOthers += amount - fee;
         emit ReceivedFromOther(address(uint160(uint256(from))), source, amount - fee);
+        _onOther(amount - fee);
+    }
+
+    /// A leg passes money from outside the strategy on to its hub, where it is capital (the audit of
+    /// 2026-10-26, finding 5: kept, it would read as the leg's profit and pay the performance fee). The
+    /// hub's own is capital already (`_sync`), so the hub overrides this with nothing.
+    function _onOther(uint256 net) internal virtual {
+        othersPending += net;
+        _forwardOthers();
+    }
+
+    /// This member's own USDC: its balance less what waits to be forwarded (never below zero).
+    function _ownUsdc(address usdc) internal view returns (uint256) {
+        uint256 b = IERC20(usdc).balanceOf(address(this));
+        return b > othersPending ? b - othersPending : 0;
+    }
+
+    /// `othersPending` to the hub, never a revert: on its chain as a plain transfer, else as a burn with
+    /// no destination caller, which anyone completes straight into the hub's balance; either way it
+    /// reaches the hub outside its counted moves, so `_sync` counts it as capital (the mark, the exit's
+    /// thresholds). Circle's minimum fee within the cap; retried by the next report and the exit's steps.
+    function _forwardOthers() internal {
+        uint256 amount = othersPending;
+        if (amount == 0) return;
+        address usdc = _usdc();
+        if (_isLocal(0)) {
+            othersPending = 0;
+            IERC20(usdc).transfer(links[0], amount);
+            emit OthersForwarded(amount, 0);
+            return;
+        }
+        if (amount > BURN_CHUNK) amount = BURN_CHUNK; // the rest at the next report or exit step
+        uint256 fee = _minFee(amount);
+        if (fee * 10_000 > amount * MIN_FEE_CAP_BP) return;
+        IERC20(usdc).approve(TOKEN_MESSENGER, amount);
+        try ITokenMessengerV2(TOKEN_MESSENGER).depositForBurn(
+            amount, linkDomains[0], bytes32(uint256(uint160(links[0]))), usdc, bytes32(0), fee, FINALITY_STANDARD
+        ) {
+            othersPending -= amount;
+            emit OthersForwarded(amount, fee);
+        } catch {
+            IERC20(usdc).approve(TOKEN_MESSENGER, 0);
+        }
     }
 
 
@@ -488,6 +547,7 @@ abstract contract MemberState {
     /// observedAt, observationBlock, lastMoveBlock, Holding[], sentTo[4], receivedFrom[4], feesFrom[4])`,
     /// every figure read in this one block.
     function _report() internal {
+        _forwardOthers();
         (Holding[] memory holdings, uint256 lastMove) = _holdings();
         uint64 seq = ++reportSeq;
         bytes memory body = abi.encode(

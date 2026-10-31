@@ -100,7 +100,7 @@ contract Token1V1Test is FixtureV1 {
         assertGt(uint160(address(mock)), uint160(ARB_USDC));
         pool = new MockSwapPool(ARB_USDC, address(mock));
         aave.setReserve(address(mock), address(aMock), address(0), aave.GOOD_CONFIG(), 7);
-        aave.setPrice(address(mock), PRICE, address(0xD0C));
+        aave.setPrice(address(mock), PRICE, address(wbtcSource)); // a fresh source (finding 3)
         aave.setPool(address(mock), ARB_USDC, 500, address(pool));
         // at AAVE's price exactly: 1 token (1e18) = 2,000 USDC (2e9)
         uint160 atOracle = band.limitAt(PRICE, 1e8, 0, 18, false);

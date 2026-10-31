@@ -77,7 +77,7 @@ contract CrossSliceTest is Helpers {
 
     /// DepositAccount's PINNED_VAULT_FACTORY: the vault build's version-1 combination factory, at its
     /// deterministic address (not deployed yet: the account's trust names an address, not code).
-    address constant PINNED = 0xF6989dDcf67CcbC1077C9054D62F8A1363623d1d;
+    address constant PINNED = 0x05C8c664b5484ed764f8C53e72c182fE071ceAA9;
 
     /// deposit-first-deposit-design.md (D1, D2, D3) on an Arbitrum fork: USDC waits at the account's
     /// address before any deployment, the account is deployed at the deposit, the owner's first

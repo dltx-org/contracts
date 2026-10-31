@@ -82,6 +82,9 @@ contract StrategyFactory is IVaultFunding, IProxyMaker {
     uint32[] internal _hubDomains;
     LegPinV1[] internal _legs;
     mapping(address => Member) internal _members;
+    /// An owner's strategy ids already created here: `BeginExit` names the id, not the configuration, so
+    /// one signature would exit every strategy an owner created under it (the audit of 2026-10-26, low 2)
+    mapping(address => mapping(bytes32 => bool)) public idUsed;
     bytes32[] internal _typeHashes; // member order: 0 the hub
     uint8[] internal _fieldCounts;
     string public createVaultType;
@@ -190,6 +193,8 @@ contract StrategyFactory is IVaultFunding, IProxyMaker {
         // (the hub asks it at every schedule and apply: owner-upgrades-design.md §C4)
         (bool answers, bytes memory out) = owner.staticcall(abi.encodeCall(IOwnerRemovals.removalPendingOf, (bytes32(0))));
         if (!answers || out.length < 32) revert BadOwner();
+        if (idUsed[owner][strategyId]) revert BadConfig();
+        idUsed[owner][strategyId] = true;
         bytes32 pair = VaultConfig.pairId(strategyId, owner, configHash);
         (address[] memory at, uint32[] memory domains) = _members_(pair, cfg);
         made = new address[](local);
@@ -216,7 +221,10 @@ contract StrategyFactory is IVaultFunding, IProxyMaker {
         returns (address impl)
     {
         impl = r.implementation(version, memberType);
-        if (impl == address(0) || keccak256(bytes(IMemberV1(impl).paramsType())) != _typeHashes[i]) revert BadConfig();
+        if (
+            impl == address(0) || impl.codehash != r.codeHashOf(impl)
+                || keccak256(bytes(IMemberV1(impl).paramsType())) != _typeHashes[i]
+        ) revert BadConfig();
         IMemberV1(impl).validateParams(address(r), params);
     }
 

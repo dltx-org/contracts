@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 import {DepositAccount} from "./DepositAccount.sol";
 import {DepositAccountRecord} from "./DepositAccountRecord.sol";
-import {Credential} from "./DepositAccountState.sol";
+import {Credential, IDepositFactory} from "./DepositAccountState.sol";
 import {DepositProxy, IProxyMaker} from "./DepositProxy.sol";
 import {ProxyInitCode} from "./ProxyInitCode.sol";
 
@@ -12,6 +12,8 @@ interface IDepositVersion {
     function factory() external view returns (address);
     function module() external view returns (address);
     function CODE_VERSION() external view returns (uint256);
+    /// The main contract's only: the module code hash its constructor checked.
+    function moduleCodeHash() external view returns (bytes32);
 }
 
 /// A successor factory names the factory it continues (§A9).
@@ -85,6 +87,10 @@ contract DepositFactory is IProxyMaker {
 
     /// The listed implementations, version n at index n − 1.
     address[] internal _list;
+    /// The code hash a listed implementation was accepted with (the genesis: at construction), kept for
+    /// good: an account schedules, applies and follows an upgrade only while the code at that address
+    /// still has it (the external audit's finding 4). Zero for an unlisted address.
+    mapping(address implementation => bytes32 codeHash) public codeHashOf;
 
     event Deployed(bytes32 indexed user, address indexed account, bytes32 salt);
     event TransferKeySet(address indexed previous, address indexed next, address indexed by);
@@ -113,6 +119,7 @@ contract DepositFactory is IProxyMaker {
         genesis = g;
         _list.push(g);
         versionOf[g] = 1;
+        codeHashOf[g] = g.codehash;
         recovery = recovery_;
         lastCheckIn[1] = block.timestamp;
         emit ImplementationListed(g, 1);
@@ -177,10 +184,17 @@ contract DepositFactory is IProxyMaker {
     /// have code, be neither listed nor already proposed, name this factory (or a successor descending
     /// from it, each naming the one before as its predecessor, §A9) as its own, as its module must
     /// too, and carry a CODE_VERSION above every listed version, its module's the same (an account's
-    /// forward-only rule reads it).
+    /// forward-only rule reads it). Neither it nor its module may be an EIP-7702 delegation (whose
+    /// code its holder re-points at will), the module must have the code hash `impl` was built for,
+    /// and a successor factory it names must answer every call an account makes of its factory (the
+    /// external audit's finding 4 and its low on successors).
+    ///
+    /// What this cannot see, and the 7-day review must refuse (the external audit's finding 4): code
+    /// that delegates to, or calls for its logic, a target it reads from outside itself (a beacon, a
+    /// storage slot another contract writes). Its code hash never changes while what it runs does.
     function proposeImplementation(address impl) external {
         if (msg.sender != recovery) revert NotAllowed();
-        if (impl.code.length == 0) revert BadImplementation();
+        if (impl.code.length == 0 || _delegation(impl)) revert BadImplementation();
         if (versionOf[impl] != 0) revert AlreadyListed();
         if (proposals[impl].due != 0) revert AlreadyPending();
         // its factory is this one or descends from it (§A9), by at most MAX_SUCCESSIONS predecessors: a
@@ -189,11 +203,14 @@ contract DepositFactory is IProxyMaker {
         address own = IDepositVersion(impl).factory();
         address at = own;
         for (uint256 i; at != address(this); ++i) {
-            if (i == MAX_SUCCESSIONS || at.code.length == 0) revert BadImplementation();
+            if (i == MAX_SUCCESSIONS || at.code.length == 0 || _delegation(at)) revert BadImplementation();
             at = IDepositFactorySuccessor(at).predecessor();
         }
+        // a successor must be a factory the account can live with: `factory` is an immutable of the
+        // implementation, so one answering only `predecessor()` would brick every exit (the audit's low)
+        if (own != address(this) && !_isFactory(own, impl)) revert BadImplementation();
         address m = IDepositVersion(impl).module();
-        if (IDepositVersion(m).factory() != own) revert BadImplementation();
+        if (!_moduleHolds(impl, m) || IDepositVersion(m).factory() != own) revert BadImplementation();
         uint256 codeVersion = IDepositVersion(impl).CODE_VERSION();
         // the module's forward-only checks read its own literal: it must be the version's
         if (codeVersion <= _list.length || IDepositVersion(m).CODE_VERSION() != codeVersion) revert BadVersion();
@@ -218,14 +235,45 @@ contract DepositFactory is IProxyMaker {
         Proposal memory p = proposals[impl];
         if (p.due == 0) revert NothingPending();
         if (block.timestamp < p.due) revert NotDue();
-        if (impl.codehash != p.codeHash) revert BadImplementation();
+        if (impl.codehash != p.codeHash || !_moduleHolds(impl, IDepositVersion(impl).module())) {
+            revert BadImplementation();
+        }
         uint256 v = _list.length + 1;
         if (IDepositVersion(impl).CODE_VERSION() != v) revert BadVersion();
         delete proposals[impl];
         _list.push(impl);
         versionOf[impl] = v;
+        codeHashOf[impl] = p.codeHash;
         lastCheckIn[v] = block.timestamp;
         emit ImplementationListed(impl, v);
+    }
+
+    /// An EIP-7702 delegated EOA: its 23 bytes are 0xef0100 ‖ the delegate, which its key re-points at
+    /// will (EIP-3541 forbids any deployed code starting with 0xef).
+    function _delegation(address a) internal view returns (bool) {
+        return a.code.length == 23 && bytes3(a.code) == 0xef0100;
+    }
+
+    /// `impl`'s module has code, is no delegation, and has the code hash `impl`'s constructor checked.
+    function _moduleHolds(address impl, address m) internal view returns (bool) {
+        return m.code.length != 0 && !_delegation(m) && m.codehash == IDepositVersion(impl).moduleCodeHash();
+    }
+
+    /// `f` answers, well-formed, every call an account on `impl` makes of its factory: its transfer key,
+    /// its fee recipient, `stopped` of the version, and `versionOf` and `codeHashOf` (the upgrade's).
+    function _isFactory(address f, address impl) internal view returns (bool) {
+        uint256 v = IDepositVersion(impl).CODE_VERSION();
+        return _word(f, abi.encodeCall(IDepositFactory.transferKey, ()), type(uint160).max)
+            && _word(f, abi.encodeCall(IDepositFactory.feeRecipient, ()), type(uint160).max)
+            && _word(f, abi.encodeCall(IDepositFactory.stopped, (v)), 1)
+            && _word(f, abi.encodeCall(IDepositFactory.versionOf, (impl)), type(uint256).max)
+            && _word(f, abi.encodeCall(IDepositFactory.codeHashOf, (impl)), type(uint256).max);
+    }
+
+    /// `f`'s answer to `data` is one word at most `max` (an address, a bool, a number).
+    function _word(address f, bytes memory data, uint256 max) internal view returns (bool) {
+        (bool ok, bytes memory ret) = f.staticcall(data);
+        return ok && ret.length >= 32 && abi.decode(ret, (uint256)) <= max;
     }
 
     // ── the transfer key and the escape hatch ────────────────────────────────────────────────

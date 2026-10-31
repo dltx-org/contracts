@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {Test, console} from "forge-std/Test.sol";
 import {DeployV1} from "../script/DeployV1.s.sol";
 import {StrategyFactory} from "../src/StrategyFactory.sol";
-import {AssetLegParams, AssetProfile, AssetsV1, HubParams, HyperCoreParams, LegSpec, MemberTypes, OwnerMessagesV1, PricePin, Profiles, StrategySpec} from "../src/Types.sol";
+import {AssetLegParams, AssetProfile, AssetsV1, HubParams, HyperCoreParams, LegSpec, MemberTypes, OwnerMessagesV1, ParamsTypesV1, PricePin, Profiles, Routes, Sides, StrategySpec} from "../src/Types.sol";
 import {OwnerDomain} from "../src/interfaces/IDepositOwner.sol";
 import {Arbitrum} from "../src/lib/Pinned.sol";
 import {FeePins} from "../src/lib/FeePins.sol";
@@ -26,24 +26,24 @@ contract OwnerDigestsV1Test is Test {
     // the fixed inputs
     address constant OWNER = 0x00000000000000000000000000000000000D0c0a; // a deposit account's address
     bytes32 constant STRATEGY_ID = keccak256("vector-strategy");
-    address constant FACTORY = 0xF6989dDcf67CcbC1077C9054D62F8A1363623d1d; // PinnedV1Test's V1_FACTORY
-    bytes32 constant MANIFEST = 0xb6f68225044351f415b4a65c25e4979ec677ea1b10c54f9ae90935ba3e2567b9; // version 1's
+    address constant FACTORY = 0x05C8c664b5484ed764f8C53e72c182fE071ceAA9; // PinnedV1Test's V1_FACTORY
+    bytes32 constant MANIFEST = 0x4d87a3d47fadf9333e7bc107dcdffd93fb111da9bb7b03bbf0065c2480788df7; // version 1's
     address constant HUB = 0x00000000000000000000000000000000000000a0;
     uint256 constant DEADLINE = 1_900_000_000;
 
     // the literals
     bytes32 constant ETH_PROFILE = 0x39a05622f1cdb348a942e419f7692092319f00b31ca5350f66a556fe25a6434a;
     bytes32 constant BTC_PROFILE = 0xd714870e84be29bc90f0a4ac10bab72a63e27a5c4fc139dcdd2aac3070300d12;
-    bytes32 constant CONFIG_HASH = 0x45e1b4d4cad9d6724bb59e3708cbce7234a16fe16b09aec74743f1a0c18930f1;
-    address constant MEMBER_HUB = 0x86d9eF9EA57F1F72a14FD844239AbC80f8384051;
-    address constant MEMBER_LONG = 0xeC4c29f3A7b9e7a8dE39f4e3c99e32d1b1F19aD0;
-    address constant MEMBER_SHORT = 0xD6e155ebb75176D93F4186D5B47ff7ef72A8ee68;
-    bytes32 constant CREATE_DIGEST = 0xc4abaaa6bdb4064ddfb64f3a81bc324ef917b19dbbb33729fdd0d9b501f882c0;
-    bytes32 constant UPGRADE_DIGEST = 0xc580440b21a0182abe40e59b90ea5965741ef0f6eed2e38b4e9f983a93d01e8c;
+    bytes32 constant CONFIG_HASH = 0x8b7b26f451dabfaae5c25de9aecd732bf37a5d7e6b64f891d6132c9de5f325e8;
+    address constant MEMBER_HUB = 0xF73ea15B022ef3F0C716874f702496FF8587B98a;
+    address constant MEMBER_LONG = 0xd6974a7a7351D2Dd7F282A82f8dD1C96f34Ad072;
+    address constant MEMBER_SHORT = 0xba20fB4B0C5011d1720E9bF7414Ece243c050619;
+    bytes32 constant CREATE_DIGEST = 0xee9eb6f52cb0b5aa940c3c0a7ca5c9b3f332ab248c51b921cd021f34aa2de4bb;
+    bytes32 constant UPGRADE_DIGEST = 0x285a96259482d5656ec74bfa2a25d0b739c6f6015680415865a1f91ee5e3b9fe;
     bytes32 constant SWITCH_DIGEST = 0x30d5d254dab7b184f5ae0cb0922e08cdee3d74f13d584410d8e3110d22b17dae;
     /// The same CreateVault with the management fee at its caps (100 bp, 10 USDC): the two fields' order.
-    bytes32 constant CREATE_DIGEST_MGMT = 0x2e46774263e5eb051eed2d74320184271dae780f433adeeded4fea342b98319e;
-    bytes32 constant CANCEL_DIGEST = 0x13651c8287ec200df095b066cb8b095b54621bbabfb1cc3b38e4ada12b6f41fe;
+    bytes32 constant CREATE_DIGEST_MGMT = 0x682776bb7d781eacfde4fec32e3a27ef50b5f74fc65baa8d1f05ef775e91d8d9;
+    bytes32 constant CANCEL_DIGEST = 0x0aba2782ba8d7c22f0acc938170da11ee6a1617064a53915f6f2ccd90a5a2d62;
 
     StrategyFactory factory;
     DeployV1 script;
@@ -163,7 +163,13 @@ contract OwnerDigestsV1Test is Test {
             abi.encode(AssetLegParams(id, p.asset, p.swapPool, p.swapFee, p.rateFeed, 1.15e18, 300, 50, 5))
         );
         c.legs[1] = LegSpec(
-            MemberTypes.HYPERCORE, 19, Legs.SHORT, abi.encode(HyperCoreParams(id, p.perp, p.perpCoin, p.shortAsset, 100, 0, 50))
+            MemberTypes.HYPERCORE, 19, Legs.SHORT,
+            abi.encode(
+                HyperCoreParams(
+                    id, p.perp, p.perpCoin, p.shortAsset, 100, 0, 50, Routes.AGENT, Sides.SHORT, 1000, 15, 15, address(0), 0,
+                    false
+                )
+            )
         );
     }
 
@@ -233,6 +239,42 @@ contract OwnerDigestsV1Test is Test {
         assertEq(cancel, CANCEL_DIGEST);
     }
 
+    /// The audit of 2026-10-26, finding 6: the owner's `HealthFloor` for a long at 0x…a1, 1.10 (engine/owner's
+    /// strategy-spec.test.ts pins the same literal).
+    bytes32 constant HEALTH_FLOOR_DIGEST = 0x3308511e777954a1c22bff3e8dbb1dd5d50cd2beb13cffc1830b586af0749a93;
+
+    function test_v1_healthFloorDigest() public pure {
+        bytes32 d = OwnerDomain.digest(
+            OWNER,
+            keccak256(abi.encode(OwnerMessagesV1.HEALTH_FLOOR_TYPEHASH, address(0xA1), uint256(42161), uint64(1.1e18), uint256(0), DEADLINE))
+        );
+        assertEq(
+            OwnerMessagesV1.HEALTH_FLOOR_TYPEHASH,
+            keccak256("HealthFloor(address vault,uint256 chainId,uint64 healthFloor,uint256 nonce,uint256 deadline)")
+        );
+        assertEq(d, HEALTH_FLOOR_DIGEST);
+    }
+
+    /// The Hyperliquid leg's `BuilderFee` (hyperliquid-contract-route-design.md §13.2): leg 0xA2 on HyperEVM,
+    /// builder 0xB1 at 20 (2 bp), nonce 0. The literal composed with `cast` from the type string alone.
+    bytes32 constant BUILDER_FEE_DIGEST = 0xedec906c7f9611cb51730301bafafe97ef05be89127e2b354838e7a74623dddd;
+
+    function test_v1_builderFeeDigest() public pure {
+        bytes32 d = OwnerDomain.digest(
+            OWNER,
+            keccak256(
+                abi.encode(
+                    OwnerMessagesV1.BUILDER_FEE_TYPEHASH, address(0xA2), uint256(999), address(0xB1), uint16(20), uint256(0), DEADLINE
+                )
+            )
+        );
+        assertEq(
+            OwnerMessagesV1.BUILDER_FEE_TYPEHASH,
+            keccak256("BuilderFee(address vault,uint256 chainId,address builder,uint16 feeX10,uint256 nonce,uint256 deadline)")
+        );
+        assertEq(d, BUILDER_FEE_DIGEST);
+    }
+
     /// `CreateVault`'s digest composed from the type strings alone, as a wallet does: the factory's agrees.
     function test_v1_createDigest_independently() public view {
         string memory hub =
@@ -240,7 +282,7 @@ contract OwnerDigestsV1Test is Test {
         string memory long =
             "AaveV3AssetLeg(bytes32 profile,address asset,address swapPool,uint24 swapFee,address rateFeed,uint64 healthFloor,uint16 oracleBoundBp,uint16 dailyLossBp,uint16 fastFeeCapBp)";
         string memory short =
-            "HyperCoreLeg(bytes32 profile,uint32 perp,bytes32 coin,bytes32 asset,uint16 orderBoundBp,uint16 fastFeeCapBp,uint16 feeBudgetBp)";
+            "HyperCoreLeg(bytes32 profile,uint32 perp,bytes32 coin,bytes32 asset,uint16 orderBoundBp,uint16 fastFeeCapBp,uint16 feeBudgetBp,uint8 route,uint8 side,uint16 maxLeverageX100,uint16 growBoundBp,uint16 reduceBoundBp,address builder,uint16 builderFeeX10,bool referralSetup)";
         bytes memory full = abi.encodePacked(
             "CreateVault(address factory,bytes32 strategyId,uint8 group,uint32 hubDomain,bytes32 manifest,StrategyHub hub,AaveV3AssetLeg leg1,HyperCoreLeg leg2,uint256 deadline)",
             long,
@@ -264,5 +306,56 @@ contract OwnerDigestsV1Test is Test {
             )
         );
         assertEq(factory.createDigest(STRATEGY_ID, OWNER, c, DEADLINE), OwnerDomain.digest(OWNER, structHash));
+    }
+    /// The contract route's CreateVault (hyperliquid-contract-route-design.md §4.1, §13.2): every new
+    /// field non-zero and distinct, so a field moved in the typed string or the encoding moves the digest.
+    /// The factory field is a fixed address, not the pinned factory, so the vector outlives a re-pin;
+    /// `engine/owner`'s strategy-spec.test.ts pins the same literal from its own field list.
+    address constant ROUTE_FACTORY = 0x000000000000000000000000000000000000FaC7;
+    address constant ROUTE_BUILDER = 0x00000000000000000000000000000000000000B1;
+    bytes32 constant ROUTE_CREATE_DIGEST = 0x0bf29b3a301cfc92413d81bdd65dce8152a26fc8ad016b034c1897f21a34932f;
+
+    function test_params_typedStringAndDigest() public view {
+        string memory short = "HyperCoreLeg(bytes32 profile,uint32 perp,bytes32 coin,bytes32 asset,uint16 orderBoundBp,uint16 fastFeeCapBp,uint16 feeBudgetBp,uint8 route,uint8 side,uint16 maxLeverageX100,uint16 growBoundBp,uint16 reduceBoundBp,address builder,uint16 builderFeeX10,bool referralSetup)";
+        assertEq(ParamsTypesV1.HYPERCORE, short);
+        assertEq(ParamsTypesV1.HYPERCORE_FIELDS, "bytes32 profile,uint32 perp,bytes32 coin,bytes32 asset,uint16 orderBoundBp,uint16 fastFeeCapBp,uint16 feeBudgetBp,uint8 route,uint8 side,uint16 maxLeverageX100,uint16 growBoundBp,uint16 reduceBoundBp,address builder,uint16 builderFeeX10,bool referralSetup");
+        assertEq(ParamsTypesV1.HYPERCORE_COUNT, 15);
+        StrategySpec memory c = _spec();
+        c.factory = ROUTE_FACTORY;
+        AssetProfile memory p = _btc();
+        c.legs[1].params = abi.encode(
+            HyperCoreParams(
+                Profiles.id(p), p.perp, p.perpCoin, p.shortAsset, 50, 5, 40, Routes.CONTRACT, Sides.SHORT, 1000, 15, 20,
+                ROUTE_BUILDER, 20, true
+            )
+        );
+        string memory hub =
+            "StrategyHub(bytes32 profile,uint16 fastFeeCapBp,uint16 feeBudgetBp,uint16 feeRateBp,uint16 managementFeeBp,uint32 flatFeePerMonth)";
+        string memory long =
+            "AaveV3AssetLeg(bytes32 profile,address asset,address swapPool,uint24 swapFee,address rateFeed,uint64 healthFloor,uint16 oracleBoundBp,uint16 dailyLossBp,uint16 fastFeeCapBp)";
+        bytes memory full = abi.encodePacked(
+            "CreateVault(address factory,bytes32 strategyId,uint8 group,uint32 hubDomain,bytes32 manifest,StrategyHub hub,AaveV3AssetLeg leg1,HyperCoreLeg leg2,uint256 deadline)",
+            long,
+            short,
+            hub
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256(full),
+                c.factory,
+                STRATEGY_ID,
+                c.group,
+                c.hubDomain,
+                c.manifest,
+                keccak256(bytes.concat(keccak256(bytes(hub)), c.hubParams)),
+                keccak256(bytes.concat(keccak256(bytes(long)), c.legs[0].params)),
+                keccak256(bytes.concat(keccak256(bytes(short)), c.legs[1].params)),
+                DEADLINE
+            )
+        );
+        bytes32 d = OwnerDomain.digest(OWNER, structHash);
+        assertEq(factory.createDigest(STRATEGY_ID, OWNER, c, DEADLINE), d, "the factory's");
+        _eq("ROUTE_CREATE_DIGEST", d, ROUTE_CREATE_DIGEST);
+        assertEq(d, ROUTE_CREATE_DIGEST, "engine/owner's");
     }
 }

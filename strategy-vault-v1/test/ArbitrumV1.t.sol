@@ -13,8 +13,9 @@ import {AaveV3AssetLeg} from "../src/AaveV3AssetLeg.sol";
 import {AaveV3AssetLegState} from "../src/AaveV3AssetLegState.sol";
 import {AaveV3AssetLegRewards} from "../src/AaveV3AssetLegRewards.sol";
 import {StrategyFactory} from "../src/StrategyFactory.sol";
+import {StrategyRegistry} from "../src/StrategyRegistry.sol";
 import {ProxyInitCode} from "../src/ProxyInitCode.sol";
-import {AssetProfile, AssetsV1, HubParams, OwnerMessagesV1, PricePin, Profiles, StrategySpec} from "../src/Types.sol";
+import {AssetProfile, AssetsV1, HubParams, OwnerMessagesV1, PricePin, Profiles, StrategySpec, VersionMember} from "../src/Types.sol";
 import {Assets, VaultConfig} from "../src/lib/VaultTypes.sol";
 import {PriceSourcePin} from "../src/lib/PriceSource.sol";
 import {walletCred} from "./mocks/Mocks.sol";
@@ -99,7 +100,7 @@ contract ArbitrumV1Test is FixtureV1 {
         StrategySpec memory c = _btcSpec();
         c.group = 0;
         c.hubParams = abi.encode(HubParams(btcProfile, 4, 50, 1500, 0, 0)); // another configuration: new members
-        address[] memory made = _create(c);
+        address[] memory made = _createAs(keccak256("another"), c);
         assertEq(Hub(made[0]).profile(), btcProfile);
     }
 
@@ -424,7 +425,7 @@ contract ArbitrumV1Test is FixtureV1 {
         MockToken other = new MockToken(8);
         MockToken aOther = new MockToken(8);
         aave.setReserve(address(other), address(aOther), address(0), aave.GOOD_CONFIG(), 9);
-        aave.setPrice(address(other), 82_000e8, address(0xB7C));
+        aave.setPrice(address(other), 82_000e8, address(wbtcSource));
         aave.setPool(address(other), ARB_USDC, 3000, address(wbtcPool30));
         p.asset = address(other);
         p.aAsset = address(aOther);
@@ -516,6 +517,84 @@ contract ArbitrumV1Test is FixtureV1 {
         vm.prank(stranger);
         vm.expectRevert(MemberState.NotAllowed.selector);
         AaveV3AssetLegRewards(long).followSwitch(to);
+    }
+
+    // ── the external audit of 2026-10-26 (research/audit-2026-10-26.md) ─────────────────────────────
+
+    /// Low 1: a version whose group stopped checking in is never scheduled (anyone would put the strategy
+    /// in exit at once), and a schedule whose version stopped since waits at its apply.
+    function test_audit_L1_aStoppedVersionIsNeitherScheduledNorApplied() public {
+        (bytes32 manifest2,,) = _version2();
+        vm.warp(vm.getBlockTimestamp() + 8 days); // no check-in: version 2 stopped for group 0
+        assertTrue(registry.stopped(0, 2));
+        uint256 deadline = vm.getBlockTimestamp() + 1 hours;
+        bytes memory sig = _upgradeSig(walletPk, hub, manifest2, 0, deadline);
+        vm.expectRevert(MemberState.NotListed.selector);
+        VaultUpgrade(hub).scheduleUpgrade(manifest2, walletCred(wallet), deadline, sig);
+        _checkIn();
+        uint64 due = _schedule(manifest2);
+        vm.warp(due + 7 days); // stopped again before anyone applied it
+        vm.expectRevert(MemberState.NotListed.selector);
+        VaultUpgrade(hub).applyUpgrade();
+        _checkIn();
+        VaultUpgrade(hub).applyUpgrade();
+        assertEq(MemberState(hub).codeVersion(), 2);
+    }
+
+    /// Low 2: `BeginExit` names the strategy id, so the factory refuses an owner's id twice.
+    function test_audit_L2_anOwnersStrategyIdIsUsedOnce() public {
+        assertTrue(factory.idUsed(address(owner), STRATEGY));
+        StrategySpec memory c = _btcSpec();
+        c.hubParams = abi.encode(HubParams(btcProfile, 4, 50, 1500, 0, 0)); // another configuration
+        _createReverts(c, StrategyFactory.BadConfig.selector);
+    }
+
+    /// Finding 4's counterpart: code that changes behind a listed address (a re-pointed EIP-7702
+    /// delegation, a self-destructed and redeployed contract) never becomes a member's implementation.
+    function test_audit_F4_codeThatMovedAfterItsListingIsNeverApplied() public {
+        (bytes32 manifest2, address hub2,) = _version2();
+        uint64 due = _schedule(manifest2);
+        vm.etch(hub2, address(hubImpl).code); // other code at the listed address
+        vm.warp(due);
+        vm.expectRevert(MemberState.NotListed.selector);
+        VaultUpgrade(hub).applyUpgrade();
+        assertEq(MemberState(hub).codeVersion(), 1);
+    }
+
+    /// Finding 4's counterpart at the listing: an EIP-7702 delegation runs whatever its EOA points to
+    /// next, so the registry never lists one.
+    function test_audit_F4_aDelegationIsNeverListed() public {
+        address eoa = makeAddr("delegating-eoa");
+        vm.etch(eoa, abi.encodePacked(hex"ef0100", address(hubImpl)));
+        VersionMember[] memory m = _members(eoa, address(longImpl), FAR_SHORT, FAR_HASH_2);
+        vm.prank(recovery);
+        vm.expectRevert(StrategyRegistry.BadVersion.selector);
+        registry.proposeVersion(2, m);
+    }
+
+    /// Finding 6: the owner sets the long's health floor by signature, within the compiled range; the
+    /// key's borrow then keeps it; nobody else can.
+    function test_audit_F6_theOwnerSetsTheHealthFloor() public {
+        bytes32 cred = walletCred(wallet);
+        uint256 deadline = vm.getBlockTimestamp() + 1 hours;
+        bytes memory sig = _floorSig(1.2e18, 0, deadline);
+        vm.prank(stranger); // anyone submits; the signature is the power
+        AaveV3AssetLeg(payable(long)).setHealthFloor(1.2e18, cred, deadline, sig);
+        assertEq(AaveV3AssetLegState(long).healthFloor(), 1.2e18);
+        vm.expectRevert(MemberState.BadSignature.selector); // its nonce spent
+        AaveV3AssetLeg(payable(long)).setHealthFloor(1.2e18, cred, deadline, sig);
+        sig = _floorSig(1.04e18, 1, deadline);
+        vm.expectRevert(AaveV3AssetLegState.BadParams.selector);
+        AaveV3AssetLeg(payable(long)).setHealthFloor(1.04e18, cred, deadline, sig);
+        sig = _floorSig(1.3e18, 1, deadline);
+        vm.expectRevert(MemberState.BadSignature.selector); // signed for another floor
+        AaveV3AssetLeg(payable(long)).setHealthFloor(1.25e18, cred, deadline, sig);
+    }
+
+    function _floorSig(uint64 floor, uint256 nonce, uint256 deadline) internal view returns (bytes memory) {
+        return _sign(
+            walletPk, keccak256(abi.encode(OwnerMessagesV1.HEALTH_FLOOR_TYPEHASH, long, block.chainid, floor, nonce, deadline))
+        );
     }
 }
 

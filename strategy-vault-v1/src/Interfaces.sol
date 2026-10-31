@@ -11,6 +11,7 @@ interface IRegistryV1 {
     function versionOf(bytes32 manifest) external view returns (uint256);
     function manifestOf(uint256 version) external view returns (bytes32);
     function implementation(uint256 version, uint8 memberType) external view returns (address);
+    function codeHashOf(address implementation) external view returns (bytes32);
     function profileOpen(bytes32 id) external view returns (bool);
     function profileOf(bytes32 id) external view returns (AssetProfile memory);
     function feeAddress() external view returns (address);

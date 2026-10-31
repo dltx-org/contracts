@@ -23,6 +23,8 @@ import {
     MemberTypes,
     OwnerMessagesV1,
     Profiles,
+    Routes,
+    Sides,
     StrategySpec
 } from "../src/Types.sol";
 
@@ -108,7 +110,7 @@ contract RehearseV1 is Script {
             abi.encode(AssetLegParams(id, p.asset, p.swapPool, p.swapFee, p.rateFeed, 1.15e18, 300, 50, 5))
         );
         c.legs[1] = LegSpec(
-            MemberTypes.HYPERCORE, 19, Legs.SHORT, abi.encode(HyperCoreParams(id, p.perp, p.perpCoin, p.shortAsset, 100, 0, 50))
+            MemberTypes.HYPERCORE, 19, Legs.SHORT, abi.encode(HyperCoreParams(id, p.perp, p.perpCoin, p.shortAsset, 100, 0, 50, Routes.AGENT, Sides.SHORT, 1000, 15, 15, address(0), 0, false))
         );
     }
 
@@ -171,8 +173,9 @@ contract RehearseV1 is Script {
     function _v2Short() internal {
         (address e, bytes32 eh) = _module("short-exit");
         (address b, bytes32 bh) = _module("short-exit-b");
+        (address o, bytes32 oh) = _module("short-route");
         (address u, bytes32 uh) = _module("upgrade");
-        _deploy2("SHORT_V2", type(HyperCoreLegV2).creationCode, abi.encode(e, eh, b, bh, u, uh, address(registry)));
+        _deploy2("SHORT_V2", type(HyperCoreLegV2).creationCode, abi.encode(e, eh, b, bh, o, oh, u, uh, address(registry)));
     }
 
     function _v2Arb() internal {

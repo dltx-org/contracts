@@ -11,7 +11,42 @@ import {IERC20, IPool, ISwapRouter02, RepayWithCollateral} from "../src/RepayWit
  * way today's incidents sat: borrowed to the LTV ceiling, then the pool's oracle is mocked a few
  * percent lower to put the health factor where cb67d44c (1.0098) and 7cfbc206 (1.030) were, or
  * under 1.0. Only the oracle is mocked; the swap runs on the real Uniswap V3 pool at the real price.
+ *
+ * The receiver is read through `IReceiver`, the strategy legs' view of it. The parking tests replay
+ * the 2026-10-26 audit's proof shapes for its finding 2 and show the fix.
  */
+
+/// The receiver's ABI (the strategy legs' `IRepayWithCollateral` + `IReceiverPins`, and the rest).
+interface IReceiver {
+    struct Permit {
+        uint256 value;
+        uint256 deadline;
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
+    }
+
+    error NotPool();
+    error NotInitiator();
+    error NothingToRepay();
+
+    function POOL() external view returns (address);
+    function ROUTER() external view returns (address);
+    function REPAY_ALL() external view returns (uint256);
+    function VARIABLE_RATE_MODE() external view returns (uint256);
+    function repayWithCollateral(
+        address collateralAsset,
+        address debtAsset,
+        uint256 flashAmount,
+        uint256 debtRepayAmount,
+        uint256 maxCollateralIn,
+        uint24 poolFee,
+        Permit calldata permit
+    ) external returns (uint256 debtRepaid, uint256 collateralSpent);
+    function executeOperation(address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params)
+        external
+        returns (bool);
+}
 
 interface IPoolExt is IPool {
     function getUserAccountData(address user)
@@ -74,7 +109,7 @@ abstract contract RepayWithCollateralForkTest is Test {
     uint256 internal constant USER_PK = 0xA11CE;
     address internal user;
     IPoolExt internal pool;
-    RepayWithCollateral internal rwc;
+    IReceiver internal rwc;
     address internal oracle;
     address internal aWeth;
     address internal vUsdc;
@@ -86,7 +121,7 @@ abstract contract RepayWithCollateralForkTest is Test {
     function setUp() public virtual {
         vm.createSelectFork(vm.rpcUrl(rpcAlias));
         pool = IPoolExt(POOL_ADDR);
-        rwc = new RepayWithCollateral(IPool(POOL_ADDR), ISwapRouter02(ROUTER));
+        rwc = IReceiver(deployReceiver());
         user = vm.addr(USER_PK);
         oracle = IAddressesProvider(pool.ADDRESSES_PROVIDER()).getPriceOracle();
         IPool.ReserveData memory w = pool.getReserveData(WETH);
@@ -95,6 +130,10 @@ abstract contract RepayWithCollateralForkTest is Test {
         realWethPrice = IPriceOracle(oracle).getAssetPrice(WETH);
         vm.label(address(rwc), "RepayWithCollateral");
         vm.label(user, "user");
+    }
+
+    function deployReceiver() internal returns (address) {
+        return address(new RepayWithCollateral(IPool(POOL_ADDR), ISwapRouter02(ROUTER)));
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
@@ -138,9 +177,12 @@ abstract contract RepayWithCollateralForkTest is Test {
     }
 
     function quoteIn(uint256 usdcOut) internal returns (uint256 wethIn) {
-        (wethIn,,,) = IQuoterV2(QUOTER).quoteExactOutputSingle(
-            IQuoterV2.QuoteExactOutputSingleParams({tokenIn: WETH, tokenOut: USDC, amount: usdcOut, fee: FEE, sqrtPriceLimitX96: 0})
-        );
+        (wethIn,,,) = IQuoterV2(QUOTER)
+            .quoteExactOutputSingle(
+                IQuoterV2.QuoteExactOutputSingleParams({
+                    tokenIn: WETH, tokenOut: USDC, amount: usdcOut, fee: FEE, sqrtPriceLimitX96: 0
+                })
+            );
     }
 
     function premiumOn(uint256 flashAmount) internal view returns (uint256) {
@@ -159,19 +201,20 @@ abstract contract RepayWithCollateralForkTest is Test {
         if (maxIn > bal) maxIn = bal;
     }
 
-    function signPermit(uint256 value, uint256 deadline) internal view returns (RepayWithCollateral.Permit memory p) {
-        bytes32 typehash = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+    function signPermit(uint256 value, uint256 deadline) internal view returns (IReceiver.Permit memory p) {
+        bytes32 typehash =
+            keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
         uint256 nonce = IATokenPermit(aWeth).nonces(user);
         bytes32 structHash = keccak256(abi.encode(typehash, user, address(rwc), value, nonce, deadline));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", IATokenPermit(aWeth).DOMAIN_SEPARATOR(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(USER_PK, digest);
-        p = RepayWithCollateral.Permit({value: value, deadline: deadline, v: v, r: r, s: s});
+        p = IReceiver.Permit({value: value, deadline: deadline, v: v, r: r, s: s});
     }
 
     /// One call as the user, the port's way: size, permit, call.
     function repay(uint256 flashAmount, uint256 debtRepayAmount) internal returns (uint256 repaid, uint256 spent) {
         uint256 maxIn = sizePull(flashAmount);
-        RepayWithCollateral.Permit memory p = signPermit(maxIn, block.timestamp + 600);
+        IReceiver.Permit memory p = signPermit(maxIn, block.timestamp + 600);
         vm.prank(user);
         (repaid, spent) = rwc.repayWithCollateral(WETH, USDC, flashAmount, debtRepayAmount, maxIn, FEE, p);
     }
@@ -313,7 +356,7 @@ abstract contract RepayWithCollateralForkTest is Test {
         // under the minimum: the aToken pull fails the pool's health check and the whole call reverts
         uint256 tooSmall = rMinUsdc / 2;
         uint256 maxIn = sizePull(tooSmall);
-        RepayWithCollateral.Permit memory p = signPermit(maxIn, block.timestamp + 600);
+        IReceiver.Permit memory p = signPermit(maxIn, block.timestamp + 600);
         vm.prank(user);
         vm.expectRevert();
         rwc.repayWithCollateral(WETH, USDC, tooSmall, tooSmall, maxIn, FEE, p);
@@ -365,7 +408,7 @@ abstract contract RepayWithCollateralForkTest is Test {
         address attacker = makeAddr("attacker");
         uint256 r = debtBefore / 10;
         uint256 maxIn = sizePull(r);
-        RepayWithCollateral.Permit memory p = signPermit(maxIn, block.timestamp + 600); // the USER's permit
+        IReceiver.Permit memory p = signPermit(maxIn, block.timestamp + 600); // the USER's permit
         // the user has even granted an allowance — still nothing the attacker can use
         vm.prank(user);
         IERC20(aWeth).approve(address(rwc), type(uint256).max);
@@ -380,15 +423,15 @@ abstract contract RepayWithCollateralForkTest is Test {
 
     function test_callbackIsThePoolsAlone() public {
         bytes memory params = "";
-        vm.expectRevert(RepayWithCollateral.NotPool.selector);
+        vm.expectRevert(IReceiver.NotPool.selector);
         rwc.executeOperation(USDC, 1, 0, address(rwc), params);
 
         vm.prank(POOL_ADDR);
-        vm.expectRevert(RepayWithCollateral.NotInitiator.selector);
+        vm.expectRevert(IReceiver.NotInitiator.selector);
         rwc.executeOperation(USDC, 1, 0, makeAddr("someone"), params);
     }
 
-    /// 💣 A stray balance must never brick the receiver: it goes to the caller, the operation runs.
+    /// 💣 A stray balance must never brick the receiver: it stays where it is, and the operation runs.
     function test_strayBalancesDoNotBrickTheReceiver() public {
         openAtLtvCeiling(1 ether);
         mockWethPriceBps(priceBpsForHf(10_300));
@@ -409,17 +452,18 @@ abstract contract RepayWithCollateralForkTest is Test {
 
         assertApproxEqAbs(repaid, r, 1, "the operation ran as if nothing had been donated");
         assertApproxEqAbs(debtOf(user), debtBefore - r, 2);
-        assertNoResidue();
-        assertEq(IERC20(WETH).balanceOf(user), wethBefore + 1, "the stray wei went to the caller");
-        // the stray cent of USDC was in the contract when the callback counted what it held, so it
-        // paid a cent of the loan instead of a cent of collateral: the user's USDC is unchanged
-        assertEq(IERC20(USDC).balanceOf(user), usdcBefore, "the stray cent paid down the loan");
+        // nothing the call did not create moves: the strays stay, the caller gets nothing
+        assertEq(IERC20(WETH).balanceOf(address(rwc)), 1, "the stray wei stayed");
+        assertEq(IERC20(USDC).balanceOf(address(rwc)), 10_000, "the stray cent stayed");
+        assertEq(IERC20(aWeth).balanceOf(address(rwc)), 0);
+        assertEq(IERC20(WETH).balanceOf(user), wethBefore, "no gift to the caller");
+        assertEq(IERC20(USDC).balanceOf(user), usdcBefore, "no gift to the caller");
     }
 
     function test_nothingToRepayReverts() public {
-        RepayWithCollateral.Permit memory p;
+        IReceiver.Permit memory p;
         vm.prank(user);
-        vm.expectRevert(RepayWithCollateral.NothingToRepay.selector);
+        vm.expectRevert(IReceiver.NothingToRepay.selector);
         rwc.repayWithCollateral(WETH, USDC, 0, 0, 0, FEE, p);
     }
 
@@ -427,10 +471,142 @@ abstract contract RepayWithCollateralForkTest is Test {
         openAtLtvCeiling(1 ether);
         uint256 r = debtOf(user) / 10;
         uint256 tooLittle = quoteIn(r + premiumOn(r)) / 2;
-        RepayWithCollateral.Permit memory p = signPermit(tooLittle, block.timestamp + 600);
+        IReceiver.Permit memory p = signPermit(tooLittle, block.timestamp + 600);
         vm.prank(user);
         vm.expectRevert(); // the router cannot fill within amountInMaximum
         rwc.repayWithCollateral(WETH, USDC, r, r, tooLittle, FEE, p);
+    }
+
+    // ── the 2026-10-26 audit, finding 2: balances parked on the receiver ─────────────────────────
+    //
+    // A strategy leg measures what one call moved as (aTokens before − after) − (raw collateral after −
+    // before) and reverts on an underflow (AaveV3AssetLegState._repayWithCollateral). The same measure
+    // is taken here on the user: the call must never leave it with more aTokens, nor more raw collateral
+    // than the call itself returned: the parked balance stays on the receiver, untouched.
+
+    /// Park `amount` of collateral as aTokens on the receiver, the cheap way: a supply on its behalf.
+    function parkATokens(uint256 amount) internal {
+        address parker = makeAddr("parker");
+        deal(WETH, parker, amount);
+        vm.startPrank(parker);
+        IERC20(WETH).approve(POOL_ADDR, amount);
+        pool.supply(WETH, amount, address(rwc), 0);
+        vm.stopPrank();
+    }
+
+    function parkRaw(uint256 amount) internal {
+        address parker = makeAddr("parker");
+        deal(WETH, parker, amount);
+        vm.prank(parker);
+        IERC20(WETH).transfer(address(rwc), amount);
+    }
+
+    struct Seen {
+        uint256 aUser;
+        uint256 wUser;
+        uint256 aRwc;
+        uint256 wRwc;
+        uint256 debt;
+    }
+
+    function snap() internal view returns (Seen memory s) {
+        s = Seen({
+            aUser: IERC20(aWeth).balanceOf(user),
+            wUser: IERC20(WETH).balanceOf(user),
+            aRwc: IERC20(aWeth).balanceOf(address(rwc)),
+            wRwc: IERC20(WETH).balanceOf(address(rwc)),
+            debt: debtOf(user)
+        });
+    }
+
+    /// The fix's postconditions: the user ends with fewer aTokens and no new raw collateral (the leg's
+    /// measure cannot underflow), the debt went down by R, and the parked balances did not move.
+    function assertParkedUntouched(Seen memory b, Seen memory a, uint256 r) internal pure {
+        assertLt(a.aUser, b.aUser, "the caller's aTokens went DOWN: the leg's measure holds");
+        assertEq(a.wUser, b.wUser, "no raw collateral reached the caller");
+        assertApproxEqAbs(a.debt, b.debt - r, 2, "debt down by R");
+        // a wei of rebasing rounding on the parked aTokens, nothing more
+        assertApproxEqAbs(a.aRwc, b.aRwc, 2, "the parked aTokens stayed");
+        assertEq(a.wRwc, b.wRwc, "the parked raw collateral stayed");
+    }
+
+    /// The audit's first PoC: 1 aWETH parked.
+    function test_parkedOneATokenNeverReachesTheCaller() public {
+        openAtLtvCeiling(2 ether);
+        uint256 r = debtOf(user) / 10;
+        parkATokens(1 ether);
+        Seen memory b = snap();
+
+        repay(r, r);
+
+        Seen memory a = snap();
+        assertParkedUntouched(b, a, r);
+    }
+
+    /// The audit's second PoC: 1 raw WETH parked.
+    function test_parkedRawCollateralNeverReachesTheCaller() public {
+        openAtLtvCeiling(2 ether);
+        uint256 r = debtOf(user) / 10;
+        parkRaw(1 ether);
+        Seen memory b = snap();
+
+        repay(r, r);
+
+        Seen memory a = snap();
+        assertParkedUntouched(b, a, r);
+    }
+
+    /// A parked balance LARGER than the user's whole collateral (the audit asks for one over what the
+    /// call sells; the existing stray test parked a wei), both kinds at once.
+    function test_parkedBalanceLargerThanTheCollateral() public {
+        openAtLtvCeiling(1 ether);
+        uint256 r = debtOf(user) / 10;
+        parkATokens(5 ether);
+        parkRaw(5 ether);
+        Seen memory b = snap();
+        assertGt(b.aRwc, b.aUser, "the parked aTokens exceed the user's collateral");
+
+        repay(r, r);
+
+        Seen memory a = snap();
+        assertParkedUntouched(b, a, r);
+    }
+
+    /// The audit's variant: a parked balance over the reserve's free liquidity makes `withdraw(max)`
+    /// unpayable, for every caller. Free liquidity is the underlying the aToken contract holds; it is
+    /// set here to what the user's own pull needs plus a margin, under the parked balance.
+    function test_parkedBalanceOverFreeLiquidityDoesNotBlock() public {
+        openAtLtvCeiling(1 ether);
+        uint256 r = debtOf(user) / 10;
+        parkATokens(50 ether);
+        uint256 maxIn = sizePull(r);
+        deal(WETH, aWeth, maxIn + 1 ether); // borrowers took the rest out: free liquidity < parked
+        assertLt(IERC20(WETH).balanceOf(aWeth), IERC20(aWeth).balanceOf(address(rwc)), "fixture: parked > free");
+        IReceiver.Permit memory p = signPermit(maxIn, block.timestamp + 600);
+
+        Seen memory b = snap();
+        vm.prank(user);
+        rwc.repayWithCollateral(WETH, USDC, r, r, maxIn, FEE, p);
+        assertParkedUntouched(b, snap(), r);
+    }
+
+    /// Parked debt asset (USDC) pays nothing of the loan: the call sells the
+    /// same collateral as with nothing parked, and the USDC stays.
+    function test_parkedDebtAssetIsNotCounted() public {
+        openAtLtvCeiling(1 ether);
+        uint256 r = debtOf(user) / 10;
+        uint256 parkedUsdc = r * 2; // more than the whole loan
+        address parker = makeAddr("parker");
+        deal(USDC, parker, parkedUsdc);
+        vm.prank(parker);
+        IERC20(USDC).transfer(address(rwc), parkedUsdc);
+        uint256 usdcBefore = IERC20(USDC).balanceOf(user);
+
+        (, uint256 spent) = repay(r, r);
+
+        assertGt(spent, 0, "the collateral paid the loan");
+        assertEq(IERC20(USDC).balanceOf(address(rwc)), parkedUsdc, "the parked USDC stayed");
+        assertEq(IERC20(USDC).balanceOf(user), usdcBefore, "no gift to the caller");
     }
 }
 

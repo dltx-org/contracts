@@ -22,6 +22,7 @@ library HyperCore {
     address internal constant PX_WITHDRAWABLE = 0x0000000000000000000000000000000000000803;
     address internal constant PX_MARK = 0x0000000000000000000000000000000000000806;
     address internal constant PX_ORACLE = 0x0000000000000000000000000000000000000807;
+    address internal constant PX_L1_BLOCK = 0x0000000000000000000000000000000000000809;
     address internal constant PX_PERP_ASSET_INFO = 0x000000000000000000000000000000000000080a;
     address internal constant PX_BBO = 0x000000000000000000000000000000000000080e;
     address internal constant PX_MARGIN_SUMMARY = 0x000000000000000000000000000000000000080F;
@@ -95,7 +96,9 @@ library HyperCore {
     /// What can move or be sold: total − hold.
     function spotAvailable(address user, uint64 token) internal view returns (uint64) {
         SpotBalance memory b = spotBalance(user, token);
-        return b.total - b.hold;
+        unchecked {
+            return b.total > b.hold ? b.total - b.hold : 0; // a hold read above the total: nothing, never a revert
+        }
     }
 
     function withdrawable(address user) internal view returns (uint64) {
@@ -112,8 +115,51 @@ library HyperCore {
         return abi.decode(_read(PX_ORACLE, abi.encode(perp)), (uint64));
     }
 
+    /// HyperCore's own block number (read on mainnet 2026-10-27): the clock of the contract route's window
+    /// (hyperliquid-contract-route-design.md §4.4), which stops when HyperCore does. A 0 is a failed read:
+    /// the window would record "never" and stay open.
+    function l1BlockNumber() internal view returns (uint64 n) {
+        n = abi.decode(_read(PX_L1_BLOCK, ""), (uint64));
+        if (n == 0) revert PrecompileFailed(PX_L1_BLOCK);
+    }
+
     function perpSzDecimals(uint32 perp) internal view returns (uint8) {
         return abi.decode(_read(PX_PERP_ASSET_INFO, abi.encode(perp)), (PerpAssetInfo)).szDecimals;
+    }
+
+    /// The perp's max leverage (its maintenance margin rate is 1 / (2 × it)).
+    function perpMaxLeverage(uint32 perp) internal view returns (uint8) {
+        return abi.decode(_read(PX_PERP_ASSET_INFO, abi.encode(perp)), (PerpAssetInfo)).maxLeverage;
+    }
+
+    /// A perp's price at `precompile` (`PX_MARK` or `PX_ORACLE`), never reverting: 0 when the read fails, as
+    /// a delisted perp's may, so an exit goes on past a perp it can't price (the combined review's CR-X1).
+    function tryPx(address precompile, uint32 perp) internal view returns (uint64 px) {
+        (bool ok, bytes memory out) = precompile.staticcall{gas: READ_GAS}(abi.encode(perp));
+        if (!ok || out.length < 32) return 0;
+        uint256 v = abi.decode(out, (uint256));
+        if (v <= type(uint64).max) px = uint64(v);
+    }
+
+    /// A perp's size decimals and max leverage, never reverting: `maxLev` 0 when the read fails or shows
+    /// what no perp has (a max leverage of 0, over 6 size decimals), or when the answer's first word is not
+    /// the struct's offset 0x20 (the fields would not be where they are read). Read from the answer's head (the
+    /// struct's offset, `coin`'s offset, `marginTableId`, `szDecimals`, `maxLeverage`): the coin is not
+    /// decoded, so no answer can make it revert.
+    function tryPerpInfo(uint32 perp) internal view returns (uint8 szd, uint8 maxLev) {
+        (bool ok, bytes memory out) = PX_PERP_ASSET_INFO.staticcall{gas: READ_GAS}(abi.encode(perp));
+        if (!ok || out.length < 160) return (0, 0);
+        uint256 head;
+        uint256 s;
+        uint256 l;
+        assembly ("memory-safe") {
+            head := mload(add(out, 32))
+            s := mload(add(out, 128))
+            l := mload(add(out, 160))
+        }
+        // the tuple holds a string: its encoding starts with the offset 0x20, else the fields aren't where read
+        if (head != 0x20 || s > 6 || l == 0 || l > type(uint8).max) return (0, 0);
+        return (uint8(s), uint8(l));
     }
 
     /// The best bid and offer, or (0, 0) when the precompile refuses: the book only ever tightens a
@@ -138,13 +184,20 @@ library HyperCore {
 
     // ── CoreWriter: version byte 1, a 3-byte action id, then the ABI-encoded fields ────────────────────
 
+    /// An action of two static fields, each widened to its word: byte for byte their `abi.encode` (a
+    /// static value is left-padded to 32 bytes, a bool is 0 or 1). One encoder for 7, 10, 11 and 12, so
+    /// the leg carries it once (hyperliquid-contract-route-design.md §13.2: the leg at its size margin).
+    function _send2(uint24 id, uint256 a, uint256 b) private {
+        _send(id, abi.encode(a, b));
+    }
+
     function _send(uint24 id, bytes memory fields) private {
         ICoreWriter(CORE_WRITER).sendRawAction(abi.encodePacked(uint8(1), id, fields));
     }
 
-    /// Action 1: an IOC limit order, no client id.
-    function orderIoc(uint32 asset, bool isBuy, uint64 px, uint64 sz, bool reduceOnly) internal {
-        _send(1, abi.encode(asset, isBuy, px, sz, reduceOnly, TIF_IOC, uint128(0)));
+    /// Action 1: an IOC limit order, under client id `cloid` (0: none).
+    function orderIoc(uint32 asset, bool isBuy, uint64 px, uint64 sz, bool reduceOnly, uint128 cloid) internal {
+        _send(1, abi.encode(asset, isBuy, px, sz, reduceOnly, TIF_IOC, cloid));
     }
 
     function spotSend(address to, uint64 token, uint64 amountWei) internal {
@@ -152,19 +205,24 @@ library HyperCore {
     }
 
     function usdClassTransfer(uint64 ntl, bool toPerp) internal {
-        _send(7, abi.encode(ntl, toPerp));
+        _send2(7, ntl, toPerp ? 1 : 0);
     }
 
     function addApiWallet(address agent, string memory name) internal {
         _send(9, abi.encode(agent, name));
     }
 
+    /// CoreWriter 12: `builder` may charge up to `maxFeeRate` on this account's orders; 0 revokes.
+    function approveBuilderFee(uint64 maxFeeRate, address builder) internal {
+        _send2(12, maxFeeRate, uint160(builder));
+    }
+
     function cancelByOid(uint32 asset, uint64 oid) internal {
-        _send(10, abi.encode(asset, oid));
+        _send2(10, asset, oid);
     }
 
     function cancelByCloid(uint32 asset, uint128 cloid) internal {
-        _send(11, abi.encode(asset, cloid));
+        _send2(11, asset, cloid);
     }
 
     /// Action 13: `sendAsset` (destination, sub-account none, source DEX, destination DEX, token, wei).

@@ -8,7 +8,7 @@ import {AaveV3AssetLegRewards} from "./AaveV3AssetLegRewards.sol";
 import {IRegistryV1} from "./Interfaces.sol";
 import {IAavePool, IERC20} from "./interfaces/Protocols.sol";
 import {Legs} from "./lib/VaultTypes.sol";
-import {AssetLegParams, AssetProfile, MemberTypes, ParamsTypesV1} from "./Types.sol";
+import {AssetLegParams, AssetProfile, MemberTypes, OwnerMessagesV1, ParamsTypesV1} from "./Types.sol";
 
 /*
  * The AAVE V3 ASSET LEG (asset-profiles-design.md §3.2; version 0's `LongVault` made generic and
@@ -153,6 +153,36 @@ contract AaveV3AssetLeg is MemberBase, AaveV3AssetLegState {
     function setEMode(uint8 category) external onlyExecution nonReentrant counted {
         IAavePool(POOL).setUserEMode(category);
         _checkFloor();
+    }
+
+    // ── the owner's (the audit of 2026-10-26, finding 6) ─────────────────────────────────────────────
+
+    /// The owner's `HealthFloor(vault, chainId, healthFloor, nonce, deadline)`, by one credential spending
+    /// its own nonce: the floor every borrow and withdrawal keeps, within the compiled range. Given AAVE's
+    /// liquidation threshold it bounds the long's leverage, so DLTX's key, which never sets it, can't park
+    /// the position nearer liquidation than the owner's risk preset. Anyone may submit.
+    function setHealthFloor(uint64 floor, bytes32 credential, uint256 deadline, bytes calldata signature)
+        external
+        nonReentrant
+    {
+        _checkOwnerAs(
+            credential,
+            keccak256(
+                abi.encode(
+                    OwnerMessagesV1.HEALTH_FLOOR_TYPEHASH,
+                    address(this),
+                    block.chainid,
+                    floor,
+                    ownerNonceOf[credential],
+                    deadline
+                )
+            ),
+            deadline,
+            signature
+        );
+        if (floor < MIN_HEALTH_FLOOR || floor > MAX_HEALTH_FLOOR) revert BadParams();
+        healthFloor = floor;
+        emit HealthFloorSet(floor);
     }
 
     /// Amendment 2d §5.2 (unchanged but for the asset): what this leg owes and can't repay from its own

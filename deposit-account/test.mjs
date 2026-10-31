@@ -29,7 +29,8 @@ if (existsSync(envFile)) {
   for (const line of readFileSync(envFile, 'utf8').split('\n')) {
     const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim())
     if (!m) continue
-    const [, key, raw] = m
+    const [, name, raw] = m
+    const key = name.replace(/_RPC_PRIMARY$/, '_RPC_URL')
     if (!wanted.includes(key) || process.env[key]) continue
     process.env[key] = raw.replace(/^["']|["']$/g, '')
   }
@@ -87,24 +88,6 @@ if (!testedPin || testedPin !== pinOf('script/Deploy.s.sol')) {
   console.error(
     'deposit-account: script/Deploy.s.sol and test/DepositFactory.t.sol pin different builds',
   )
-  process.exit(1)
-}
-// The seam test's fixtures are the vault's pinned build: its eight hashes are the vault project's (the
-// partner's audit L1; `test_seam_theFixturesAreThePinnedBuild` checks the files against them).
-const vaultPins = (file) =>
-  [
-    ...readFileSync(resolve(here, file), 'utf8').matchAll(
-      /bytes32 constant (\w+_CODE) = (0x[0-9a-fA-F]+);/g,
-    ),
-  ]
-    .map((m) => `${m[1]}=${m[2].toLowerCase()}`)
-    .sort()
-const seamPins = vaultPins('test/Seam.t.sol')
-if (
-  seamPins.length !== 8 ||
-  JSON.stringify(seamPins) !== JSON.stringify(vaultPins('../strategy-vault/test/Pinned.t.sol'))
-) {
-  console.error("deposit-account: test/Seam.t.sol does not pin the vault project's eight hashes")
   process.exit(1)
 }
 // The storage layout (owner-upgrades-design.md §A6, I7): one sequential layout from slot 0, shared by

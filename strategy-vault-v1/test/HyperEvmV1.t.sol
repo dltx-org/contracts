@@ -59,7 +59,7 @@ contract HyperEvmV1Test is FixtureV1 {
         c.legs[1].params = abi.encode(s);
         uint256 deadline = vm.getBlockTimestamp() + 1 days;
         bytes memory sig = _createSig(c, deadline);
-        vm.expectRevert(HyperCoreLeg.BadParams.selector);
+        vm.expectRevert(HyperCoreLegState.BadParams.selector);
         factory.create(STRATEGY, address(owner), c, deadline, sig);
     }
 
@@ -88,6 +88,7 @@ contract HyperEvmV1Test is FixtureV1 {
         short2 = address(
             new HyperCoreLegV2(
                 address(shortExit), address(shortExit).codehash, address(shortExitB), address(shortExitB).codehash,
+                address(shortRoute), address(shortRoute).codehash,
                 address(upgrade), address(upgrade).codehash, address(registry)
             )
         );
@@ -135,6 +136,17 @@ contract HyperEvmV1Test is FixtureV1 {
         assertEq(_implOf(short), short2);
         // a version not above its own is ignored too (manifest 1 republished)
         _deliverUpgrade(manifest1, vm.getBlockTimestamp());
+        assertEq(_implOf(short), short2);
+    }
+
+    /// The audit of 2026-10-26: a `publishedAt` from the future (only a forged Circle message carries one)
+    /// is ignored; it would otherwise hold every later follow back.
+    function test_audit_follow_aFuturePublicationIsIgnored() public {
+        (bytes32 manifest2, address short2) = _version2();
+        _deliverUpgrade(manifest2, vm.getBlockTimestamp() + 1);
+        assertEq(_implOf(short), address(shortImpl));
+        assertEq(MemberState(short).lastPublishedAt(), 0);
+        _deliverUpgrade(manifest2, vm.getBlockTimestamp());
         assertEq(_implOf(short), short2);
     }
 

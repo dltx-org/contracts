@@ -78,6 +78,9 @@ contract StrategyRegistry is IRegistryV1 {
     mapping(uint256 => mapping(uint8 => address)) internal _implementation;
     mapping(uint256 => uint8[]) internal _localTypes;
     mapping(uint256 => uint256) public acceptedAt;
+    /// A listed implementation's code hash as reviewed: a member moves to it only while its code is still
+    /// that (the audit of 2026-10-26, finding 4's counterpart here)
+    mapping(address => bytes32) public codeHashOf;
     mapping(uint256 => mapping(uint8 => uint256)) public lastCheckIn; // version → group → time
 
     // ── profiles ─────────────────────────────────────────────────────────────────────────────────────
@@ -241,6 +244,13 @@ contract StrategyRegistry is IRegistryV1 {
             if (m.domain != here) continue;
             address impl = m.implementation;
             if (impl.codehash != m.codeHash) revert CodeChanged();
+            // an EIP-7702 delegation (0xef0100 ‖ address) runs whatever its EOA delegates to next: never code
+            bytes3 prefix;
+            assembly ("memory-safe") {
+                extcodecopy(impl, 0, 0, 3)
+                prefix := mload(0)
+            }
+            if (prefix == 0xef0100) revert BadVersion();
             IImplementation c = IImplementation(impl);
             if (
                 c.CODE_VERSION() != version || c.MEMBER_TYPE() != m.memberType
@@ -288,6 +298,7 @@ contract StrategyRegistry is IRegistryV1 {
         for (uint256 i; i < n; ++i) {
             if (p.implementations[i].codehash != p.codeHashes[i]) revert CodeChanged();
             _implementation[version][p.memberTypes[i]] = p.implementations[i];
+            codeHashOf[p.implementations[i]] = p.codeHashes[i];
         }
         _localTypes[version] = p.memberTypes;
         manifestOf[version] = p.manifest;

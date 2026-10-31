@@ -6,15 +6,25 @@ pragma solidity 0.8.28;
  * docs/architecture/repay-with-collateral-design.md.
  *
  * One transaction, from the position's own wallet: flash-loan the debt asset, repay the wallet's
- * variable debt, pull the wallet's aTokens (by permit), withdraw the collateral, buy back exactly the
+ * variable debt, pull the wallet's aTokens (by permit), withdraw exactly those, buy back exactly the
  * loan plus premium on Uniswap V3 with a hard input bound, re-supply what the swap did not spend (or
  * hand it back when the pool refuses a supply), and return the loan. Either all of it happens or
  * none of it does, so the position is never between states and no health-factor floor is needed for
  * a shrink. Repaying FIRST is what lets the aToken pull pass the pool's own health check afterwards.
  *
- * Immutable, ownerless, stateless: no admin, no upgrade, no balances between transactions, and the
- * only power it has is over the position of the wallet that calls it. SparkLend is an Aave V3.0.x
- * fork with the same pool interface, so one deployment per (pool, router) covers both venues.
+ * It moves only what the call itself brought: every figure is a DELTA against the balances the
+ * receiver held when the call began (the 2026-10-26 audit's finding 2, "aTokens parked in the
+ * flash-loan receiver"). The aTokens withdrawn are exactly the ones this call pulled from its
+ * caller; the debt asset counted towards the loan is the flash loan, not a donation; the collateral
+ * swapped, supplied back or returned is exactly what that withdrawal produced. A balance the call did
+ * not create — sent here by mistake or to grief — is never touched: it stays on this contract, where
+ * it changes nothing for any later call. It is not handed to the caller (a gift to the caller would
+ * break the strategy leg's own measure) and not swept anywhere (an ownerless contract has no
+ * destination that would not be a new privileged address); whoever sends tokens here gives them up.
+ *
+ * Immutable, ownerless: no admin, no upgrade; the only power it has is over the position of the wallet
+ * that calls it. SparkLend is an Aave V3.0.x fork with the same pool interface, so one deployment per
+ * (pool, router) covers both venues.
  */
 
 interface IERC20 {
@@ -26,15 +36,8 @@ interface IERC20 {
 }
 
 interface IERC20Permit {
-    function permit(
-        address owner,
-        address spender,
-        uint256 value,
-        uint256 deadline,
-        uint8 v,
-        bytes32 r,
-        bytes32 s
-    ) external;
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+        external;
 }
 
 /// The five pool functions used, on the ABI both AAVE V3 (3.0 through 3.4: `getReserveData` keeps the
@@ -82,13 +85,9 @@ interface IPool {
 }
 
 interface IFlashLoanSimpleReceiver {
-    function executeOperation(
-        address asset,
-        uint256 amount,
-        uint256 premium,
-        address initiator,
-        bytes calldata params
-    ) external returns (bool);
+    function executeOperation(address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params)
+        external
+        returns (bool);
 }
 
 /// Uniswap V3 SwapRouter02 — no deadline in the params, unlike the original SwapRouter.
@@ -103,10 +102,7 @@ interface ISwapRouter02 {
         uint160 sqrtPriceLimitX96;
     }
 
-    function exactOutputSingle(ExactOutputSingleParams calldata params)
-        external
-        payable
-        returns (uint256 amountIn);
+    function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
 }
 
 contract RepayWithCollateral is IFlashLoanSimpleReceiver {
@@ -128,8 +124,8 @@ contract RepayWithCollateral is IFlashLoanSimpleReceiver {
         bytes32 s;
     }
 
-    /// What the callback needs, captured in `repayWithCollateral` from msg.sender — never read from
-    /// anything a third party could supply.
+    /// What the callback needs, captured in `repayWithCollateral` from msg.sender and this contract's
+    /// own balances — never read from anything a third party could supply.
     struct Call {
         address user;
         address collateralAsset;
@@ -137,6 +133,8 @@ contract RepayWithCollateral is IFlashLoanSimpleReceiver {
         uint256 maxCollateralIn;
         uint24 poolFee;
         Permit permit;
+        /// The debt asset this contract held before the flash loan: not the call's, never counted.
+        uint256 parkedDebt;
     }
 
     /// The callback's figures, kept in one memory struct so the callback's frame stays shallow.
@@ -162,11 +160,6 @@ contract RepayWithCollateral is IFlashLoanSimpleReceiver {
         uint256 collateralResupplied,
         uint256 collateralReturned
     );
-
-    /// A balance the operation did not create — anything sent to this contract directly — handed
-    /// to the caller at the end of the call rather than left to accumulate or, worse, to revert
-    /// every later call: an ownerless contract has no other way out.
-    event StrayReturned(address indexed token, address indexed to, uint256 amount);
 
     error Reentrancy();
     error NotPool();
@@ -213,31 +206,25 @@ contract RepayWithCollateral is IFlashLoanSimpleReceiver {
                 debtRepayAmount: debtRepayAmount,
                 maxCollateralIn: maxCollateralIn,
                 poolFee: poolFee,
-                permit: permit
+                permit: permit,
+                parkedDebt: IERC20(debtAsset).balanceOf(address(this))
             })
         );
         POOL.flashLoanSimple(address(this), debtAsset, flashAmount, params, 0);
 
-        // Nothing left behind: the pool has pulled the loan and the swap's leftovers went back to
-        // the user inside the callback. Whatever remains was not this operation's — a balance sent
-        // here directly, by mistake or to grief — and goes to the caller. NEVER a revert: a check
-        // that reverted on a stray wei would let anyone disable every later call for good.
-        _returnStray(debtAsset, msg.sender);
-        _returnStray(collateralAsset, msg.sender);
-
+        // Nothing of this call is left behind: the pool has pulled the loan and the swap's leftovers
+        // went back to the user inside the callback. Whatever this contract still holds was here
+        // before the call and stays — never handed to the caller, never a revert.
         debtRepaid = _debtRepaid;
         collateralSpent = _collateralSpent;
         _locked = 0;
     }
 
     /// The pool's flash-loan callback — the pool's alone, for a loan this contract started.
-    function executeOperation(
-        address asset,
-        uint256 amount,
-        uint256 premium,
-        address initiator,
-        bytes calldata params
-    ) external returns (bool) {
+    function executeOperation(address asset, uint256 amount, uint256 premium, address initiator, bytes calldata params)
+        external
+        returns (bool)
+    {
         if (msg.sender != address(POOL)) revert NotPool();
         if (initiator != address(this)) revert NotInitiator();
         Call memory c = abi.decode(params, (Call));
@@ -245,9 +232,9 @@ contract RepayWithCollateral is IFlashLoanSimpleReceiver {
 
         r.repaid = _repay(asset, amount, c);
         r.withdrawn = _pullAndWithdraw(c);
-        r.spent = _buyBack(asset, amount + premium, c.collateralAsset, c.poolFee, r.withdrawn);
+        r.spent = _buyBack(asset, amount + premium, c.parkedDebt, c.collateralAsset, c.poolFee, r.withdrawn);
         (r.resupplied, r.returned) = _settleLeftover(c.collateralAsset, c.user, r.withdrawn - r.spent);
-        _returnLoan(asset, amount + premium, c.user);
+        _returnLoan(asset, amount + premium, c.parkedDebt, c.user);
 
         _debtRepaid = r.repaid;
         _collateralSpent = r.spent;
@@ -266,11 +253,11 @@ contract RepayWithCollateral is IFlashLoanSimpleReceiver {
         return true;
     }
 
-    /// 5. Let the pool take the loan back; anything over it (rounding) is the user's.
-    function _returnLoan(address asset, uint256 owed, address user) internal {
+    /// 5. Let the pool take the loan back; anything of this call's over it (rounding) is the user's.
+    function _returnLoan(address asset, uint256 owed, uint256 parkedDebt, address user) internal {
         IERC20(asset).approve(address(POOL), owed);
-        uint256 balance = IERC20(asset).balanceOf(address(this));
-        if (balance > owed) IERC20(asset).transfer(user, balance - owed);
+        uint256 own = IERC20(asset).balanceOf(address(this)) - parkedDebt;
+        if (own > owed) IERC20(asset).transfer(user, own - owed);
     }
 
     /// 1. Repay, with an explicit amount — the live debt in full-close mode.
@@ -287,23 +274,32 @@ contract RepayWithCollateral is IFlashLoanSimpleReceiver {
         repaid = POOL.repay(asset, toRepay, VARIABLE_RATE_MODE, c.user);
     }
 
-    /// 2. Pull the user's aTokens and withdraw the collateral. The pull runs the pool's health
-    ///    check on the user, which the repay just improved.
+    /// 2. Pull the user's aTokens and withdraw exactly those. The pull runs the pool's health check
+    ///    on the user, which the repay just improved.
     function _pullAndWithdraw(Call memory c) internal returns (uint256 withdrawn) {
         address aToken = POOL.getReserveData(c.collateralAsset).aTokenAddress;
         _permitIfNeeded(aToken, c);
+        uint256 parked = IERC20(aToken).balanceOf(address(this));
         IERC20(aToken).transferFrom(c.user, address(this), c.maxCollateralIn);
-        // The whole aToken balance (`max`), not `maxCollateralIn`: a rebasing transfer can land a
-        // wei short, and `withdraw` reverts on a wei more than the balance.
-        withdrawn = POOL.withdraw(c.collateralAsset, type(uint256).max, address(this));
+        // What the pull ADDED, measured, not `maxCollateralIn`: a rebasing transfer can land a wei
+        // short, and `withdraw` reverts on a wei more than the balance. With nothing parked it is the
+        // whole balance, the same withdrawal as `max`; with aTokens parked here they stay, so a parked
+        // balance is never withdrawn (it may exceed the reserve's free liquidity) nor given away.
+        uint256 pulled = IERC20(aToken).balanceOf(address(this)) - parked;
+        withdrawn = POOL.withdraw(c.collateralAsset, pulled, address(this));
     }
 
-    /// 3. Buy back exactly what the pool will take, less the flash loan the repay left unspent.
-    function _buyBack(address asset, uint256 owed, address collateralAsset, uint24 poolFee, uint256 withdrawn)
-        internal
-        returns (uint256 spent)
-    {
-        uint256 held = IERC20(asset).balanceOf(address(this));
+    /// 3. Buy back exactly what the pool will take, less the flash loan the repay left unspent. A
+    ///    balance of the debt asset parked here before the call is not the call's and pays nothing.
+    function _buyBack(
+        address asset,
+        uint256 owed,
+        uint256 parkedDebt,
+        address collateralAsset,
+        uint24 poolFee,
+        uint256 withdrawn
+    ) internal returns (uint256 spent) {
+        uint256 held = IERC20(asset).balanceOf(address(this)) - parkedDebt;
         uint256 needed = owed > held ? owed - held : 0;
         if (needed == 0) return 0;
         IERC20(collateralAsset).approve(address(ROUTER), withdrawn);
@@ -323,6 +319,7 @@ contract RepayWithCollateral is IFlashLoanSimpleReceiver {
 
     /// 4. The unspent collateral goes back into the position — or to the wallet when the pool
     ///    refuses a supply (a frozen reserve, a supply cap): a rescue never fails on its leftovers.
+    ///    `leftover` is this call's own (withdrawn − spent); raw collateral parked here stays.
     function _settleLeftover(address collateralAsset, address user, uint256 leftover)
         internal
         returns (uint256 resupplied, uint256 returned)
@@ -338,25 +335,12 @@ contract RepayWithCollateral is IFlashLoanSimpleReceiver {
         }
     }
 
-    function _returnStray(address token, address to) internal {
-        uint256 balance = IERC20(token).balanceOf(address(this));
-        if (balance == 0) return;
-        IERC20(token).transfer(to, balance);
-        emit StrayReturned(token, to, balance);
-    }
-
     function _permitIfNeeded(address aToken, Call memory c) internal {
         if (IERC20(aToken).allowance(c.user, address(this)) >= c.maxCollateralIn) return;
         // A permit that fails (already used, expired, wrong nonce) is tolerated here: the
         // transferFrom that follows is the real check, and it reverts without an allowance.
-        try IERC20Permit(aToken).permit(
-            c.user,
-            address(this),
-            c.permit.value,
-            c.permit.deadline,
-            c.permit.v,
-            c.permit.r,
-            c.permit.s
-        ) {} catch {}
+        try IERC20Permit(aToken)
+            .permit(c.user, address(this), c.permit.value, c.permit.deadline, c.permit.v, c.permit.r, c.permit.s) {}
+            catch {}
     }
 }

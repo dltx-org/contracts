@@ -10,7 +10,7 @@ import {AaveV3AssetLegExit} from "../src/AaveV3AssetLegExit.sol";
 import {AaveV3AssetLegRewards} from "../src/AaveV3AssetLegRewards.sol";
 import {StrategyRegistry} from "../src/StrategyRegistry.sol";
 import {StrategyFactory} from "../src/StrategyFactory.sol";
-import {AssetLegParams, AssetProfile, AssetsV1, HubParams, HyperCoreParams, LegSpec, Manifests, MemberTypes, ParamsTypesV1, PricePin, Profiles, StrategySpec, VersionMember} from "../src/Types.sol";
+import {AssetLegParams, AssetProfile, AssetsV1, HubParams, HyperCoreParams, LegSpec, Manifests, MemberTypes, ParamsTypesV1, PricePin, Profiles, Routes, Sides, StrategySpec, VersionMember} from "../src/Types.sol";
 import {Arbitrum} from "../src/lib/Pinned.sol";
 import {FeePins} from "../src/lib/FeePins.sol";
 import {Assets, Legs} from "../src/lib/VaultTypes.sol";
@@ -27,6 +27,36 @@ import {MockOwner} from "./mocks/Mocks.sol";
  * the unit suites' subject: here each due time is written to now (a fork cannot wait 7 days without
  * every feed going stale).
  */
+/// One of AAVE's sources as the leg's freshness check sees it in a fork test that warps past the pinned
+/// block's rounds (the audit of 2026-10-26, finding 3): the real feed's answer, stamped now, so a sale's
+/// bound computes as on a live chain. AAVE's own prices are untouched (its oracle reads its sources
+/// internally); `test_fork_audit_F3_*` points the check back at the real feed.
+contract LiveFeed {
+    address public immutable REAL;
+
+    constructor(address real) {
+        REAL = real;
+    }
+
+    function decimals() external view returns (uint8) {
+        return LiveFeed(REAL).decimals();
+    }
+
+    function latestRoundData() external view returns (uint80 id, int256 answer, uint256, uint256, uint80) {
+        (id, answer,,,) = LiveFeed(REAL).latestRoundData();
+        return (id, answer, block.timestamp, block.timestamp, id);
+    }
+
+    function getRoundData(uint80 id) external view returns (uint80, int256 answer, uint256, uint256, uint80) {
+        (, answer,,,) = LiveFeed(REAL).latestRoundData();
+        return (id, answer, block.timestamp, block.timestamp, id);
+    }
+}
+
+interface IAaveSourcesFork {
+    function getSourceOfAsset(address asset) external view returns (address);
+}
+
 abstract contract ArbitrumForkV1 is Test {
     using stdStorage for StdStorage;
 
@@ -66,6 +96,16 @@ abstract contract ArbitrumForkV1 is Test {
     uint32 nextFlatPerMonth;
 
     /// The world at `blockNumber`; false (and nothing done) without ARBITRUM_RPC_URL.
+    /// AAVE's source for `asset`, read live by the leg's freshness check (`LiveFeed`).
+    function _liveSource(address asset) internal {
+        address real = IAaveSourcesFork(Arbitrum.ORACLE).getSourceOfAsset(asset);
+        vm.mockCall(
+            Arbitrum.ORACLE,
+            abi.encodeWithSignature("getSourceOfAsset(address)", asset),
+            abi.encode(address(new LiveFeed(real)))
+        );
+    }
+
     function _forkV1(uint256 blockNumber, uint8 group) internal returns (bool) {
         string memory url = vm.envOr("ARBITRUM_RPC_URL", string(""));
         if (bytes(url).length == 0) return false;
@@ -73,6 +113,8 @@ abstract contract ArbitrumForkV1 is Test {
         (bool ok,) = address(vm).call(abi.encodeWithSignature("setEvmVersion(string)", "cancun"));
         require(ok, "setEvmVersion");
         forked = true;
+        _liveSource(Arbitrum.WETH);
+        _liveSource(WBTC);
         (wallet, walletPk) = makeAddrAndKey("owner-wallet");
         owner = new MockOwner();
         owner.setWallet(wallet, true);
@@ -242,7 +284,7 @@ abstract contract ArbitrumForkV1 is Test {
     }
 
     function _shortParams(bytes32 id, AssetProfile memory p, uint16 orderBoundBp) internal pure returns (bytes memory) {
-        return abi.encode(HyperCoreParams(id, p.perp, p.perpCoin, p.shortAsset, orderBoundBp, 0, 50));
+        return abi.encode(HyperCoreParams(id, p.perp, p.perpCoin, p.shortAsset, orderBoundBp, 0, 50, Routes.AGENT, Sides.SHORT, 1000, 15, 15, address(0), 0, false));
     }
 
     function _signDigest(bytes32 digest) internal view returns (bytes memory) {

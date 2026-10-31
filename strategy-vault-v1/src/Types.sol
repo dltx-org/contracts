@@ -70,7 +70,11 @@ struct AssetLegParams {
     uint16 fastFeeCapBp;
 }
 
-/// The Hyperliquid leg's parameters (`HyperCoreLeg(...)`).
+/// The Hyperliquid leg's parameters (`HyperCoreLeg(...)`). The last seven are the contract route's
+/// (hyperliquid-contract-route-design.md §4.1, §13.2): the route at creation (`Routes`), the leg's side on
+/// its perp (`Sides`), the leverage cap (× 100), the growth and reduction bands around the oracle, and the
+/// Hyperliquid builder fee's builder and ceiling (tenths of a bp, 0 at launch); then whether the leg
+/// runs the account's one-time referral setup (spec §16, Amendment A).
 struct HyperCoreParams {
     bytes32 profile;
     uint32 perp;
@@ -79,6 +83,26 @@ struct HyperCoreParams {
     uint16 orderBoundBp;
     uint16 fastFeeCapBp;
     uint16 feeBudgetBp;
+    uint8 route;
+    uint8 side;
+    uint16 maxLeverageX100;
+    uint16 growBoundBp;
+    uint16 reduceBoundBp;
+    address builder;
+    uint16 builderFeeX10;
+    bool referralSetup;
+}
+
+/// How the Hyperliquid leg's orders are sent (spec §2): by its agent, or by the leg itself through CoreWriter.
+library Routes {
+    uint8 internal constant AGENT = 1;
+    uint8 internal constant CONTRACT = 2;
+}
+
+/// The Hyperliquid leg's position on its perp: the short of a pair, or (a future pair) its long.
+library Sides {
+    uint8 internal constant LONG = 1;
+    uint8 internal constant SHORT = 2;
 }
 
 /// One leg of a strategy (version 1): its member type in place of a code, which the registry resolves.
@@ -140,10 +164,10 @@ library ParamsTypesV1 {
 
     string internal constant HYPERCORE_NAME = "HyperCoreLeg";
     string internal constant HYPERCORE_FIELDS =
-        "bytes32 profile,uint32 perp,bytes32 coin,bytes32 asset,uint16 orderBoundBp,uint16 fastFeeCapBp,uint16 feeBudgetBp";
-    uint8 internal constant HYPERCORE_COUNT = 7;
+        "bytes32 profile,uint32 perp,bytes32 coin,bytes32 asset,uint16 orderBoundBp,uint16 fastFeeCapBp,uint16 feeBudgetBp,uint8 route,uint8 side,uint16 maxLeverageX100,uint16 growBoundBp,uint16 reduceBoundBp,address builder,uint16 builderFeeX10,bool referralSetup";
+    uint8 internal constant HYPERCORE_COUNT = 15;
     string internal constant HYPERCORE =
-        "HyperCoreLeg(bytes32 profile,uint32 perp,bytes32 coin,bytes32 asset,uint16 orderBoundBp,uint16 fastFeeCapBp,uint16 feeBudgetBp)";
+        "HyperCoreLeg(bytes32 profile,uint32 perp,bytes32 coin,bytes32 asset,uint16 orderBoundBp,uint16 fastFeeCapBp,uint16 feeBudgetBp,uint8 route,uint8 side,uint16 maxLeverageX100,uint16 growBoundBp,uint16 reduceBoundBp,address builder,uint16 builderFeeX10,bool referralSetup)";
 }
 
 /*
@@ -159,6 +183,18 @@ library OwnerMessagesV1 {
     );
     bytes32 internal constant CANCEL_PENDING_ACTION_TYPEHASH = keccak256(
         "CancelPendingAction(address hub,uint256 chainId,uint8 kind,bytes32 target,uint256 due,uint256 deadline)"
+    );
+    /// The AAVE leg's own action, verified at the leg (named as `VaultAction` names a member): the owner
+    /// sets the leg's health floor within the compiled range, a change of risk preset; DLTX's key never
+    /// changes it (the audit of 2026-10-26, finding 6).
+    bytes32 internal constant HEALTH_FLOOR_TYPEHASH =
+        keccak256("HealthFloor(address vault,uint256 chainId,uint64 healthFloor,uint256 nonce,uint256 deadline)");
+    /// The Hyperliquid leg's own action, verified at the leg (hyperliquid-contract-route-design.md §13.2): the
+    /// owner sets the builder and its most, in tenths of a bp, up to the compiled 2 bp; a lowering applies at
+    /// once, a raise or another builder after 24 hours. Naming what stands (the stored builder and rate), it
+    /// is also the cancel of a pending one (`cancelBuilderFee`). DLTX's key never changes it.
+    bytes32 internal constant BUILDER_FEE_TYPEHASH = keccak256(
+        "BuilderFee(address vault,uint256 chainId,address builder,uint16 feeX10,uint256 nonce,uint256 deadline)"
     );
     /// `PendingAction.kind`
     uint8 internal constant KIND_UPGRADE = 1;
